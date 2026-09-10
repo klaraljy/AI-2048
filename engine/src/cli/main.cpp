@@ -48,11 +48,23 @@ struct Options {
   int chance_limit = 0;
   bool use_tt = true;
   bool symmetry_keys = false;
+  std::string move_spec;                // move 子命令：16 个指数
+  std::string move_direction = "left";  // move 子命令：方向名
+  bool move_stdin = false;              // move 子命令：从 stdin 批量读
   ai2048::Weights weight_overrides;
 };
 
 // 解析 "key=value,key=value,..."。键用短名，便于命令行书写。
 [[nodiscard]] bool ParseWeightOverrides(const std::string& spec, ai2048::Weights* weights);
+
+// 方向名 -> 枚举。无法识别返回 nullopt。
+[[nodiscard]] std::optional<Direction> DirectionFromName(const std::string& name) {
+  if (name == "up") return Direction::kUp;
+  if (name == "down") return Direction::kDown;
+  if (name == "left") return Direction::kLeft;
+  if (name == "right") return Direction::kRight;
+  return std::nullopt;
+}
 
 [[nodiscard]] bool ParseOptions(int argc, char** argv, Options* options) {
   for (int i = 2; i < argc; ++i) {
@@ -101,6 +113,12 @@ struct Options {
       options->use_tt = false;
     } else if (arg == "--symmetry") {
       options->symmetry_keys = true;
+    } else if (arg == "--board") {
+      if (!take(&options->move_spec)) return false;
+    } else if (arg == "--dir") {
+      if (!take(&options->move_direction)) return false;
+    } else if (arg == "--stdin") {
+      options->move_stdin = true;
     } else if (arg == "--weights") {
       // 形如 empty=270,empty_late=700,mono=47,smooth=32,merge=18,corner=2200,snake=0.35,maxtile=12
       // 用于自动调参：每次用一整套权重跑一批对局，比较分数。
@@ -568,20 +586,180 @@ int RunPlay(const Options& options) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// move：对给定棋盘执行一次走子，输出结果行
+//
+// 供前端做**逐行穷举对拍**：前端本地规则引擎必须与引擎逐位一致。
+// 只跑若干整局是不够的 —— 随机对局会漏掉罕见的方向/合并组合
+// （实测就漏掉过一个"下移把棋盘清空"的 bug）。
+//
+// 输入：16 个指数（0 = 空），行优先。
+// 输出：16 个指数 + 得分。
+// ---------------------------------------------------------------------------
+
+int RunMove(const Options& options) {
+  // 两种模式：
+  //   --board <16 个指数> --dir <方向>   单次
+  //   --stdin                            批量：每行 "<16 个指数> <方向>"
+  // 批量模式是为穷举对拍准备的 —— 逐次起进程太慢（26 万次要几分钟）。
+  if (options.move_stdin) {
+    std::string line;
+    while (std::getline(std::cin, line)) {
+      while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+      if (line.empty() || line.front() == '#') continue;
+
+      const std::size_t space = line.rfind(' ');
+      if (space == std::string::npos) {
+        std::cerr << "格式错误（应为 \"<16 个指数> <方向>\"）: " << line << "\n";
+        return 1;
+      }
+      const std::string board_spec = line.substr(0, space);
+      const std::string dir_name = line.substr(space + 1);
+
+      const std::optional<Direction> direction = DirectionFromName(dir_name);
+      if (!direction.has_value()) {
+        std::cerr << "未知方向: " << dir_name << "\n";
+        return 1;
+      }
+
+      std::array<int, ai2048::kCellCount> exponents{};
+      std::size_t pos = 0;
+      bool ok = true;
+      for (int i = 0; i < ai2048::kCellCount; ++i) {
+        const std::size_t comma = board_spec.find(',', pos);
+        const std::string token =
+            board_spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        pos = (comma == std::string::npos) ? board_spec.size() : comma + 1;
+        try {
+          exponents[static_cast<std::size_t>(i)] = std::stoi(token);
+        } catch (...) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) {
+        std::cerr << "无法解析棋盘: " << board_spec << "\n";
+        return 1;
+      }
+
+      const ai2048::MoveResult result =
+          ai2048::ApplyMove(ai2048::EncodeBoard(exponents), *direction);
+      const std::array<int, ai2048::kCellCount> out = ai2048::DecodeBoard(result.board);
+      for (int i = 0; i < ai2048::kCellCount; ++i) {
+        std::cout << out[static_cast<std::size_t>(i)] << ',';
+      }
+      std::cout << result.score_gained << "\n";
+    }
+    return 0;
+  }
+
+  if (options.move_spec.empty()) {
+    std::cerr << "move 需要 --board <16 个指数> --dir <方向>，或用 --stdin 批量\n";
+    return 1;
+  }
+
+  std::array<int, ai2048::kCellCount> exponents{};
+  {
+    std::size_t pos = 0;
+    for (int i = 0; i < ai2048::kCellCount; ++i) {
+      const std::size_t comma = options.move_spec.find(',', pos);
+      const std::string token = options.move_spec.substr(
+          pos, comma == std::string::npos ? std::string::npos : comma - pos);
+      pos = (comma == std::string::npos) ? options.move_spec.size() : comma + 1;
+      try {
+        exponents[static_cast<std::size_t>(i)] = std::stoi(token);
+      } catch (...) {
+        std::cerr << "无法解析第 " << i << " 个格子: " << token << "\n";
+        return 1;
+      }
+    }
+  }
+
+  const std::optional<Direction> direction = DirectionFromName(options.move_direction);
+  if (!direction.has_value()) {
+    std::cerr << "未知方向: " << options.move_direction << "（可用 up/down/left/right）\n";
+    return 1;
+  }
+
+  const ai2048::MoveResult result = ai2048::ApplyMove(ai2048::EncodeBoard(exponents), *direction);
+
+  const std::array<int, ai2048::kCellCount> out = ai2048::DecodeBoard(result.board);
+  for (int i = 0; i < ai2048::kCellCount; ++i) {
+    std::cout << out[static_cast<std::size_t>(i)] << (i + 1 == ai2048::kCellCount ? '\n' : ',');
+  }
+  std::cout << result.score_gained << "\n";
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// trace：把一局的最终状态打一行出来，供前端做规则对拍
+//
+// 前端有一份降级用的本地规则引擎（web/js/game.js）。两者**必须完全一致** ——
+// 否则"引擎在跑"和"引擎连不上"会得到不同的对局，那比不能玩更糟。
+//
+// 走子策略用**固定顺序的第一个合法方向**（不用 AI），这样对拍只考验规则本身，
+// 不受搜索实现影响。
+// ---------------------------------------------------------------------------
+
+int RunTrace(const Options& options) {
+  if (options.seeds_path.empty()) {
+    std::cerr << "trace 需要 --seeds <文件>\n";
+    return 1;
+  }
+  std::string error;
+  auto seeds = ReadSeeds(options.seeds_path, &error);
+  if (!seeds.has_value()) {
+    std::cerr << error << "\n";
+    return 1;
+  }
+  if (options.limit > 0 && static_cast<std::size_t>(options.limit) < seeds->size()) {
+    seeds->resize(static_cast<std::size_t>(options.limit));
+  }
+
+  constexpr std::array<Direction, 4> kOrder = {Direction::kLeft, Direction::kDown,
+                                               Direction::kRight, Direction::kUp};
+  for (const std::uint64_t seed : *seeds) {
+    Game game(seed);
+    while (!game.game_over()) {
+      bool advanced = false;
+      for (const Direction direction : kOrder) {
+        if (game.Step(direction).moved) {
+          advanced = true;
+          break;
+        }
+      }
+      if (!advanced) break;
+    }
+    // 与 Game::Serialize() 同格式，但压成一行便于逐行对拍
+    std::string state = game.Serialize();
+    std::string flat;
+    flat.reserve(state.size());
+    for (const char ch : state) {
+      flat += (ch == '\n') ? '|' : ch;
+    }
+    std::cout << flat << "\n";
+  }
+  return 0;
+}
+
 void PrintUsage() {
-  std::cout << "ai2048-cli " << ai2048::VersionString() << " (ruleset " << ai2048::RulesetVersion()
-            << ")\n"
-            << "通用选项:\n"
-            << "  --depth N         基础搜索深度，默认 6（偶数更自然）\n"
-            << "  --time N          每步时间预算（毫秒）。0 = 不限时（完全确定，可复现）\n"
-            << "  --chance-limit N  chance 节点采样上限。0 = 枚举全部空格\n"
-            << "  --no-tt           关闭置换表\n"
-            << "  --symmetry        置换表用 8 重对称键（有正确性代价，见 search.h）\n"
-            << "子命令:\n"
-            << "  version\n"
-            << "  play      [--seed N] [--every N]              让 AI 跑一局并打印\n"
-            << "  selfcheck --seeds <文件>                      同种子重跑两次，校验逐字节一致\n"
-            << "  bench     --seeds <文件> [--limit N] [--threads N] [--tag T]\n";
+  std::cout
+      << "ai2048-cli " << ai2048::VersionString() << " (ruleset " << ai2048::RulesetVersion()
+      << ")\n"
+      << "通用选项:\n"
+      << "  --depth N         基础搜索深度，默认 6（偶数更自然）\n"
+      << "  --time N          每步时间预算（毫秒）。0 = 不限时（完全确定，可复现）\n"
+      << "  --chance-limit N  chance 节点采样上限。0 = 枚举全部空格\n"
+      << "  --no-tt           关闭置换表\n"
+      << "  --symmetry        置换表用 8 重对称键（有正确性代价，见 search.h）\n"
+      << "子命令:\n"
+      << "  version\n"
+      << "  play      [--seed N] [--every N]              让 AI 跑一局并打印\n"
+      << "  move      --board <16 个指数> --dir <方向>    对给定棋盘走一步，输出结果\n"
+      << "  move      --stdin                            批量模式，每行 \"<16 个指数> <方向>\"\n"
+      << "  trace     --seeds <文件> [--limit N]          每局输出一行状态，供前端规则对拍\n"
+      << "  selfcheck --seeds <文件>                      同种子重跑两次，校验逐字节一致\n"
+      << "  bench     --seeds <文件> [--limit N] [--threads N] [--tag T]\n";
 }
 
 }  // namespace
@@ -608,6 +786,8 @@ int main(int argc, char** argv) {
   }
 
   if (command == "play") return RunPlay(options);
+  if (command == "move") return RunMove(options);
+  if (command == "trace") return RunTrace(options);
   if (command == "selfcheck") return RunSelfCheck(options);
   if (command == "bench") return RunBench(options);
 

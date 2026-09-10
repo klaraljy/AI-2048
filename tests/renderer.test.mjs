@@ -1,0 +1,205 @@
+// renderer 的 headless 冒烟测试。
+//
+// 用 _tmp 里的 DOM 桩把真实 renderer 跑起来，验证动画序列的**内部一致性**：
+// 这是没有浏览器时唯一能覆盖 renderer 的办法。
+//
+// 运行： node tests\renderer.test.mjs
+//
+// 覆盖不到的部分（如实记录，不假装覆盖了）：
+//   - 视觉正确性（颜色、字号、位置是否好看）
+//   - CSS 过渡是否真的被浏览器执行
+//   - 音效是否真的发声
+//   - 触屏手势
+// 这些只能人工在浏览器里走 AGENTS.md 的验收清单。
+
+import { installDomStub } from './dom-stub.mjs';
+
+installDomStub();
+
+const { Renderer } = await import('../web/js/renderer.js');
+const { Game, DIRECTION } = await import('../web/js/game.js');
+
+let failures = 0;
+function check(label, condition, detail = '') {
+  if (condition) {
+    console.log(`  ✓ ${label}`);
+  } else {
+    failures += 1;
+    console.error(`  ✗ ${label}${detail ? `  —— ${detail}` : ''}`);
+  }
+}
+
+function makeRenderer() {
+  const { document } = globalThis;
+  const gridNode = document.createElement('div');
+  const tilesNode = document.createElement('div');
+  return {
+    gridNode,
+    tilesNode,
+    renderer: new Renderer({
+      tilesLayer: tilesNode,
+      gridLayer: gridNode,
+      scoreElement: document.createElement('strong'),
+      bestElement: document.createElement('strong'),
+    }),
+  };
+}
+
+/** 逻辑状态里的方块数量（Map 大小）。 */
+function tileCount(renderer) {
+  return renderer.tiles.size;
+}
+
+function domCount(renderer) {
+  return renderer.tilesLayer.children.length;
+}
+
+function nonEmptyCells(board) {
+  let n = 0;
+  for (const row of board) for (const v of row) if (v !== 0) n += 1;
+  return n;
+}
+
+/** 逻辑状态与棋盘是否一致（每个非空格恰好一个方块，且指数相符）。 */
+function stateMatchesBoard(renderer, board) {
+  const seen = new Set();
+  for (const [, tile] of renderer.tiles) {
+    const key = `${tile.row},${tile.col}`;
+    if (seen.has(key)) return `位置重复: ${key}`;
+    seen.add(key);
+    if (board[tile.row][tile.col] !== tile.exponent) {
+      return `位置 ${key} 的逻辑指数 ${tile.exponent} 与棋盘 ${board[tile.row][tile.col]} 不符`;
+    }
+  }
+  if (seen.size !== nonEmptyCells(board)) {
+    return `方块数 ${seen.size} 与棋盘非空格数 ${nonEmptyCells(board)} 不符`;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+
+console.log('renderer 冒烟测试：');
+
+// 1. 初始渲染
+{
+  const { renderer } = makeRenderer();
+  const game = new Game(1);
+  renderer.reset(game.board, { score: 0, best: 0 });
+  check('初始渲染：DOM 节点数 = 非空格数', domCount(renderer) === nonEmptyCells(game.board),
+    `DOM=${domCount(renderer)} 棋盘=${nonEmptyCells(game.board)}`);
+  const mismatch = stateMatchesBoard(renderer, game.board);
+  check('初始渲染：逻辑状态与棋盘一致', mismatch === null, mismatch || '');
+}
+
+// 2. 连续走子后的一致性 —— 这是最容易出错的地方
+{
+  const { renderer } = makeRenderer();
+  const game = new Game(7);
+  renderer.reset(game.board, { score: 0, best: 0 });
+
+  const order = [DIRECTION.left, DIRECTION.down, DIRECTION.right, DIRECTION.up];
+  let steps = 0;
+  let firstError = null;
+
+  for (let i = 0; i < 120 && !game.gameOver; i++) {
+    const before = game.board.map((row) => row.slice());
+    const step = game.step(order[i % order.length]);
+    if (!step.moved) continue;
+    steps += 1;
+    await renderer.animateMove(step, before, game.score, 0);
+
+    const mismatch = stateMatchesBoard(renderer, game.board);
+    if (mismatch && !firstError) {
+      firstError = `第 ${steps} 步后：${mismatch}`;
+      break;
+    }
+    if (domCount(renderer) !== tileCount(renderer) && !firstError) {
+      firstError = `第 ${steps} 步后 DOM 节点数 ${domCount(renderer)} != 逻辑方块数 ${tileCount(renderer)}`;
+      break;
+    }
+  }
+  check(`连续 ${steps} 步走子：状态始终与棋盘一致`, firstError === null, firstError || '');
+  check('连续走子后 DOM 节点数 = 逻辑方块数', domCount(renderer) === tileCount(renderer),
+    `DOM=${domCount(renderer)} 逻辑=${tileCount(renderer)}`);
+  check('连续走子后没有动画残留（busy 为假）', renderer.busy() === false);
+}
+
+// 3. 合并时被吸收的块必须被删掉（不能泄漏 DOM 节点）
+{
+  const { renderer } = makeRenderer();
+  // 造一个必定合并的局面：[2,2,4,4] 在第一行
+  const board = [[1, 1, 2, 2], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  renderer.reset(board, { score: 0, best: 0 });
+  const before = board.map((row) => row.slice());
+
+  // 手工构造 step（不经 Game，以免生成新块干扰计数）
+  const { applyMove } = await import('../web/js/game.js');
+  const result = applyMove(before, DIRECTION.left);
+  const step = {
+    moved: true,
+    spawned: false,
+    spawn: null,
+    moves: result.moves,
+    gained: result.gained,
+  };
+  const mergedCountBefore = result.moves.filter((m) => m.merged).length;
+
+  await renderer.animateMove(step, before, result.gained, 0);
+
+  check('合并前有 2 条被吸收的轨迹', mergedCountBefore === 2, `实际 ${mergedCountBefore}`);
+  check('两对合并后只剩 2 个方块', tileCount(renderer) === 2, `实际 ${tileCount(renderer)}`);
+  check('DOM 节点数 = 2（被吸收的块已删除）', domCount(renderer) === 2, `实际 ${domCount(renderer)}`);
+  const mismatch = stateMatchesBoard(renderer, result.board);
+  check('合并后逻辑状态与棋盘一致', mismatch === null, mismatch || '');
+
+  // 数值必须更新为合并结果
+  const values = [...renderer.tiles.values()].map((t) => 2 ** t.exponent).sort((a, b) => a - b);
+  check('合并后数值为 4 和 8', values.join(',') === '4,8', `实际 ${values.join(',')}`);
+}
+
+// 4. 走动不动的方向不能产生任何变化
+{
+  const { renderer } = makeRenderer();
+  const board = [[1, 2, 1, 2], [2, 1, 2, 1], [0, 0, 0, 0], [0, 0, 0, 0]];
+  const { applyMove } = await import('../web/js/game.js');
+  renderer.reset(board, { score: 0, best: 0 });
+  const before = domCount(renderer);
+
+  const result = applyMove(board, DIRECTION.left); // 第一行推不动
+  if (!result.moved) {
+    // 模拟 main.js 的行为：moved=false 时不调用 animateMove
+    check('走不动时不产生轨迹', result.moves.length === 0);
+  } else {
+    check('这组局面本应推不动（构造有误）', false, '第一行 1 2 1 2 不该能左移');
+  }
+  check('走不动时 DOM 未变', domCount(renderer) === before);
+}
+
+// 5. busy() 的时序
+{
+  const { renderer } = makeRenderer();
+  const board = [[1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  const { applyMove } = await import('../web/js/game.js');
+  renderer.reset(board, { score: 0, best: 0 });
+
+  check('空闲时 busy 为假', renderer.busy() === false);
+
+  const result = applyMove(board, DIRECTION.left);
+  const promise = renderer.animateMove(
+    { moved: true, spawned: false, spawn: null, moves: result.moves, gained: result.gained },
+    board,
+    0,
+    0
+  );
+  check('动画期间 busy 为真', renderer.busy() === true);
+  await promise;
+  check('动画结束后 busy 为假', renderer.busy() === false);
+}
+
+console.log('');
+if (failures > 0) {
+  console.error(`renderer 冒烟测试失败：${failures} 项`);
+  process.exit(1);
+}
+console.log('renderer 冒烟测试通过');

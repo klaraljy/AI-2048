@@ -1,0 +1,505 @@
+/* AI-2048 前端样式
+ *
+ * 配色分两段：
+ *   - 2 … 2048 用经典 Gabriele Cirulli 调色板（沿用参考原型的视觉基线）
+ *   - 4096 以上是自选的，覆盖到 2^20；超过则复用最后一档
+ *
+ * 布局要点：棋盘是 position:relative 的容器，方块**绝对定位**并通过 transform 移动。
+ * 这是滑动动画的前提 —— 参考原型用 CSS Grid 直接放方块，每步重建节点，
+ * 那种结构下面块没有身份、也没有"上一帧位置"，动画在这一层不可能实现。
+ */
+
+:root {
+  --bg: #faf8ef;
+  --text: #776e65;
+  --heading: #776e65;
+  --board-bg: #bbada0;
+  --empty-cell: rgba(238, 228, 218, 0.35);
+  --button-bg: #8f7a66;
+  --button-hover: #9f8b77;
+  --button-text: #f9f6f2;
+  --accent: #f2b179;
+  --overlay-bg: rgba(238, 228, 218, 0.73);
+
+  /* 与 JS 中的常量保持一致 */
+  --gap: 12px;
+  --radius: 8px;
+  --slide-ms: 110ms;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Clear Sans", "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 16px;
+  line-height: 1.4;
+  /* 触屏上滑动时不要触发页面的滚动/缩放 */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 16px 12px 32px;
+}
+
+/* ------------------------------------------------------------------ 顶部 */
+
+.topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.title {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--heading);
+  line-height: 1;
+}
+
+.subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #9c8e82;
+}
+
+.scores {
+  display: flex;
+  gap: 8px;
+}
+
+.score-box {
+  position: relative;
+  min-width: 88px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--board-bg);
+  color: #eee4da;
+  text-align: center;
+}
+
+.score-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #eee4da;
+}
+
+.score-value {
+  display: block;
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 得分浮字：+4 之类，向上飘并淡出 */
+.score-float {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 4px;
+  font-size: 20px;
+  font-weight: 700;
+  color: #776e65;
+  pointer-events: none;
+  animation: score-float 620ms ease-out forwards;
+}
+
+@keyframes score-float {
+  0% {
+    opacity: 0.9;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-34px);
+  }
+}
+
+/* ------------------------------------------------------------------ 控制 */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+button {
+  font: inherit;
+  font-weight: 700;
+  color: var(--button-text);
+  background: var(--button-bg);
+  border: 0;
+  border-radius: var(--radius);
+  padding: 9px 14px;
+  cursor: pointer;
+  transition: background 120ms ease, opacity 120ms ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--button-hover);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.ghost {
+  background: #cdc1b4;
+  color: #776e65;
+}
+
+button.ghost:hover:not(:disabled) {
+  background: #c0b3a5;
+}
+
+button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #9c8e82;
+}
+
+select {
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: #cdc1b4;
+  color: #776e65;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ 棋盘 */
+
+.board-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  background: var(--board-bg);
+  padding: var(--gap);
+  /* 防止滑动时选中文字或触发浏览器手势 */
+  touch-action: none;
+  user-select: none;
+}
+
+/* 空槽背景层 */
+.grid {
+  position: absolute;
+  inset: var(--gap);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  gap: var(--gap);
+}
+
+.grid-cell {
+  border-radius: var(--radius);
+  background: var(--empty-cell);
+}
+
+/* 方块层。方块绝对定位，用 transform 移动 —— 这样才有 GPU 加速的平滑滑动。 */
+.tiles {
+  position: absolute;
+  inset: var(--gap);
+}
+
+.tile {
+  position: absolute;
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  will-change: transform;
+  /* 位置过渡：滑动动画就是靠这一条 */
+  transition: transform var(--slide-ms) ease-in-out;
+}
+
+/* 刚生成的方块：缩放淡入 */
+.tile.new {
+  animation: tile-appear 160ms ease-out;
+}
+
+@keyframes tile-appear {
+  0% {
+    opacity: 0;
+    transform: var(--tile-pos) scale(0.3);
+  }
+  100% {
+    opacity: 1;
+    transform: var(--tile-pos) scale(1);
+  }
+}
+
+/* 合并的方块：弹一下 */
+.tile.merged {
+  animation: tile-pop 170ms ease-in-out;
+}
+
+@keyframes tile-pop {
+  0% {
+    transform: var(--tile-pos) scale(1);
+  }
+  55% {
+    transform: var(--tile-pos) scale(1.18);
+  }
+  100% {
+    transform: var(--tile-pos) scale(1);
+  }
+}
+
+/* ------------------------------------------------------------------ 配色 */
+
+.tile-empty {
+  background: var(--empty-cell);
+  color: transparent;
+}
+
+.t-2 {
+  background: #eee4da;
+  color: #776e65;
+}
+.t-4 {
+  background: #ede0c8;
+  color: #776e65;
+}
+.t-8 {
+  background: #f2b179;
+  color: #f9f6f2;
+}
+.t-16 {
+  background: #f59563;
+  color: #f9f6f2;
+}
+.t-32 {
+  background: #f67c5f;
+  color: #f9f6f2;
+}
+.t-64 {
+  background: #f65e3b;
+  color: #f9f6f2;
+}
+.t-128 {
+  background: #edcf72;
+  color: #f9f6f2;
+}
+.t-256 {
+  background: #edcc61;
+  color: #f9f6f2;
+}
+.t-512 {
+  background: #edc850;
+  color: #f9f6f2;
+}
+.t-1024 {
+  background: #edc53f;
+  color: #f9f6f2;
+}
+.t-2048 {
+  background: #edc22e;
+  color: #f9f6f2;
+  box-shadow: 0 0 24px rgba(243, 215, 116, 0.6);
+}
+.t-4096 {
+  background: #3c3a32;
+  color: #f9f6f2;
+}
+.t-8192 {
+  background: #2f80ed;
+  color: #f9f6f2;
+}
+.t-16384 {
+  background: #9b51e0;
+  color: #f9f6f2;
+}
+.t-32768 {
+  background: #eb5757;
+  color: #f9f6f2;
+}
+.t-65536 {
+  background: #00b894;
+  color: #f9f6f2;
+}
+.t-131072 {
+  background: #0984e3;
+  color: #f9f6f2;
+}
+.t-262144 {
+  background: #6c5ce7;
+  color: #f9f6f2;
+}
+.t-524288 {
+  background: #d63031;
+  color: #f9f6f2;
+}
+.t-1048576 {
+  background: #00cec9;
+  color: #f9f6f2;
+}
+
+/* 字号按数值位数缩小 */
+.f-2 {
+  font-size: clamp(20px, 8.5cqw, 34px);
+}
+.f-3 {
+  font-size: clamp(18px, 7.5cqw, 28px);
+}
+.f-4 {
+  font-size: clamp(15px, 6cqw, 22px);
+}
+.f-5 {
+  font-size: clamp(13px, 5cqw, 18px);
+}
+.f-6 {
+  font-size: clamp(11px, 4cqw, 14px);
+}
+.f-7 {
+  font-size: clamp(9px, 3.2cqw, 12px);
+}
+
+.board-wrap {
+  container-type: inline-size;
+}
+
+/* ------------------------------------------------------------------ 遮罩 */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+  background: var(--overlay-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 16px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms ease;
+  z-index: 10;
+}
+
+.overlay.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.overlay h2 {
+  margin: 0;
+  font-size: clamp(24px, 7cqw, 38px);
+  color: var(--heading);
+}
+
+.overlay p {
+  margin: 0;
+  font-size: 14px;
+  color: #9c8e82;
+}
+
+/* ------------------------------------------------------------------ 提示 */
+
+.notice {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  background: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeeba;
+}
+
+.notice.hidden {
+  display: none;
+}
+
+.hint {
+  margin-top: 16px;
+  font-size: 13px;
+  color: #9c8e82;
+  line-height: 1.6;
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #eee4da;
+  border: 1px solid #ddd0c2;
+  font-family: inherit;
+  font-size: 12px;
+  color: #776e65;
+}
+
+/* ------------------------------------------------------------------ 无障碍 */
+
+/* 尊重系统的"减少动态效果"设置：关掉所有动画，但**不能卡住**。
+   注意：滑块位移仍要立即生效，否则方块位置会停留在旧位置。 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --slide-ms: 0ms;
+  }
+
+  .tile,
+  .tile.new,
+  .tile.merged,
+  .score-float {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media (max-width: 420px) {
+  :root {
+    --gap: 9px;
+  }
+
+  .title {
+    font-size: 32px;
+  }
+
+  .score-box {
+    min-width: 74px;
+    padding: 6px 10px;
+  }
+
+  .score-value {
+    font-size: 18px;
+  }
+}

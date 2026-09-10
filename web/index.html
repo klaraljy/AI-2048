@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#faf8ef" />
+    <title>AI-2048</title>
+    <link rel="stylesheet" href="./css/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div>
+          <h1 class="title">2048</h1>
+          <p class="subtitle">AI-2048 &middot; 引擎驱动</p>
+        </div>
+        <div class="scores">
+          <div class="score-box">
+            <span class="score-label">分数</span>
+            <strong class="score-value" id="score">0</strong>
+          </div>
+          <div class="score-box">
+            <span class="score-label">最佳</span>
+            <strong class="score-value" id="best">0</strong>
+          </div>
+        </div>
+      </header>
+
+      <div class="toolbar">
+        <button id="new-game" type="button">新游戏</button>
+        <button id="undo" type="button" class="ghost" disabled>撤销</button>
+        <span class="spacer"></span>
+        <button id="ai-step" type="button" class="ghost">AI 走一步</button>
+        <button id="ai-auto" type="button" class="ghost">AI 自动</button>
+        <button id="mute" type="button" class="ghost" aria-pressed="false">音效开</button>
+      </div>
+
+      <div class="toolbar">
+        <label class="option">
+          种子
+          <select id="seed">
+            <option value="random">随机</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="42">42</option>
+          </select>
+        </label>
+        <span class="spacer"></span>
+        <span class="option" id="seed-shown">—</span>
+      </div>
+
+      <div class="board-wrap" id="board">
+        <div class="grid" id="grid"></div>
+        <div class="tiles" id="tiles"></div>
+
+        <div class="overlay" id="overlay">
+          <h2 id="overlay-title">游戏结束</h2>
+          <p id="overlay-text"></p>
+          <div>
+            <button id="overlay-undo" type="button" class="ghost">撤销一步</button>
+            <button id="overlay-restart" type="button">再来一局</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notice hidden" id="notice"></div>
+
+      <p class="hint">
+        <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> 或 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+        移动，手机上直接滑动。<kbd>R</kbd> 重开，<kbd>U</kbd> 撤销，<kbd>M</kbd> 静音。
+      </p>
+    </div>
+
+    <script type="module" src="./js/main.js"></script>
+  </body>
+</html>
