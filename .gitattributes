@@ -1,0 +1,65 @@
+# 统一换行符为 LF。
+#
+# 为什么必须显式钉死：本机 core.autocrlf 会把 LF 转成 CRLF，导致
+#   - 同一份源码在不同检出下换行符不同 → clang-format 反复报「文件被修改」
+#   - 编译缓存（.obj / .o）因为时间戳与内容变化而反复失效
+#   - 未来的 Android 侧（Linux/NDK 工具链）与桌面侧的差异被放大
+#
+# text=auto 让 git 自己判断二进制；显式列出的类型强制 LF。
+
+* text=auto eol=lf
+
+# 明确是文本并强制 LF
+*.c      text eol=lf
+*.cc     text eol=lf
+*.cpp    text eol=lf
+*.h      text eol=lf
+*.hpp    text eol=lf
+*.cmake  text eol=lf
+CMakeLists.txt text eol=lf
+*.md     text eol=lf
+*.txt    text eol=lf
+*.json   text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.sh     text eol=lf
+*.js     text eol=lf
+*.css    text eol=lf
+*.html   text eol=lf
+*.kt     text eol=lf
+*.gradle text eol=lf
+.gitignore    text eol=lf
+.gitattributes text eol=lf
+.clang-format text eol=lf
+
+# Windows 批处理必须保持 CRLF，否则可能无法执行
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+
+# 二进制：禁止任何换行符转换
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.webp   binary
+*.wav    binary
+*.mp3    binary
+*.ogg    binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.otf    binary
+*.a      binary
+*.lib    binary
+*.so     binary
+*.dll    binary
+*.exe    binary
+*.apk    binary
+*.aab    binary
+*.bin    binary
+*.weights binary
+
+# 训练权重与跑批数据：不做 diff、不计入语言统计
+*.w           binary
+*.jsonl       binary -diff

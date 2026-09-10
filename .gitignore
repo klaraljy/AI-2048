@@ -1,0 +1,86 @@
+# ---- 构建产物 ----
+build/
+out/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+*.ninja
+.ninja_deps
+.ninja_log
+
+# ---- 编译产物 ----
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# ---- C++ / CMake 工具 ----
+compile_commands.json
+.cache/
+ccache/
+
+# ---- 测试与覆盖率 ----
+Testing/
+*.gcda
+*.gcno
+*.gcov
+coverage/
+
+# ---- 跑批与调参的可再生成产物 ----
+# 注意：benchmarks/ 是"基准种子集"，是可复现性资产，**必须提交**。
+# 只忽略跑批产生的大体量中间数据与训练权重。
+benchmarks/raw/
+*.log
+*.csv
+*.jsonl
+*.profraw
+*.profdata
+
+# 训练权重：体积可达数百 MB，不进版本管理。
+# 获取/再生成方式写在 docs/ 里，不得静默提交大文件。
+engine/models/
+*.weights
+*.w
+*.bin
+
+# ---- Android ----
+android/.gradle/
+android/local.properties
+android/build/
+android/app/build/
+android/.idea/
+android/captures/
+*.apk
+*.aab
+*.keystore
+*.jks
+gradle-home/
+
+# ---- Node（前端无构建，仅防意外） ----
+node_modules/
+package-lock.json
+
+# ---- 编辑器与系统 ----
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+Desktop.ini
+desktop.ini
+
+# ---- 临时文件 ----
+# 项目临时文件统一放 E:\DeepSeekProjects\_tmp\AI-2048\，不应出现在这里。
+# 这条是兜底：万一有残留，不要提交。
+tmp/
+temp/
+*.tmp
+*.bak
