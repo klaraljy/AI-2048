@@ -3,8 +3,9 @@
 2048 的 AI 实验室。C++ 引擎在固定种子集上跑批，用可复现的分数证明某个算法改动是不是真的更强；
 附带一个动画和音效到位、能在 Windows 桌面和 Android 手机上玩的前端。
 
-> **状态：脚手架**。目前只有目录结构与文档，**还没有任何代码可以编译**。
-> 项目定义见 `docs/brief.md`，项目规则见 `AGENTS.md`。
+> **状态：脚手架**。引擎骨架可编译、可构建、测试通过，但**还没有游戏逻辑**
+> （`ai2048-cli selfcheck` / `bench` 会返回退出码 2 并提示未实现）。
+> 前端与 Android 尚未开始。里程碑见 `docs/brief.md`。
 
 ## 它解决什么问题
 
@@ -86,10 +87,11 @@ engine\build\ai2048-server.exe --port 8765
 
 | 工具 | 版本 | 状态 |
 |---|---|---|
-| MinGW-w64 g++ | 13.1.0 | ✅ |
-| CMake | 3.31.6 | ✅（不在 PATH） |
-| Ninja | — | ✅ |
-| clang-format | 18 | ✅（不在 PATH） |
+| MinGW-w64 g++ | 13.1.0 | ✅ 实测通过 |
+| CMake | 3.31.6 | ✅ 实测通过（不在 PATH） |
+| Ninja | — | ✅ 实测通过 |
+| clang-format | 18.1.8 | ✅ 实测通过（不在 PATH） |
+| GoogleTest | v1.17.0 | ✅ 2/2 测试通过 |
 | Android SDK / JDK | 17 / 21 | ✅ |
 | Android NDK | — | ❌ 尚未安装（移动端前置条件） |
 

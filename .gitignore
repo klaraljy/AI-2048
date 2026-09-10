@@ -1,10 +1,13 @@
 # ---- 构建产物 ----
-build/
+# build*/ 而不是 build/ ：本项目用 engine\build（普通）与 engine\build-tests（含 GoogleTest）
+# 两个构建目录，只写 build/ 会漏掉后者，GoogleTest 的整个检出会被提交进去。
+build*/
 out/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
 CMakeUserPresets.json
+_deps/
 *.ninja
 .ninja_deps
 .ninja_log

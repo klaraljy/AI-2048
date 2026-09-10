@@ -41,8 +41,8 @@
 | 编译器（Android） | NDK 的 clang | ⚠️ NDK 尚未安装 | 待安装 |
 | 构建（桌面） | CMake + Ninja | CMake 3.31.6 / Ninja ✔ | 已确认 |
 | 构建（Android） | Gradle + CMake（NDK 工具链） | ⚠️ 待确认 | 待确认 |
-| 测试 | GoogleTest | ⚠️ 版本待锁定 | 已确认方案 |
-| 格式化 | clang-format | 18 ✔ | 已确认 |
+| 测试 | GoogleTest | **v1.17.0**（`FetchContent` 锁定 tag） | ✅ 已实测通过 |
+| 格式化 | clang-format | 18.1.8 ✔ | 已确认 |
 | 前端（桌面） | 原生 HTML / CSS / JS（无框架无构建） | — | 已确认 |
 | 通信（桌面） | WebSocket + JSON | 待定义 | 已确认方向 |
 | 通信（Android） | JNI | — | 已确认 |
@@ -215,8 +215,10 @@ clang-format --dry-run --Werror --style=file $cf
 
 ### 工作流 A：C++ 引擎
 
-> 以下 5 条命令已在脚手架阶段**实际跑通**（`ai2048-cli version` 输出 `ai2048 0.0.1 (ruleset 1)`，
-> `selfcheck` / `bench` 目前返回退出码 2 并提示未实现）。
+> 以下命令**全部已实测通过**（脚手架阶段）：`clang-format` exit 0、
+> `cmake` 配置与构建 exit 0、`ctest` **2/2 通过**、
+> `ai2048-cli version` 输出 `ai2048 0.0.1 (ruleset 1)`。
+> `selfcheck` / `bench` 目前返回退出码 2 并提示未实现。
 
 ```powershell
 $cf = (Get-ChildItem engine\src, engine\tests, engine\include -Recurse -Include *.cpp,*.h).FullName
@@ -228,16 +230,20 @@ engine\build\ai2048-cli.exe selfcheck --seeds benchmarks\seeds-v1.txt
 engine\build\ai2048-cli.exe bench --seeds benchmarks\seeds-v1.txt --tag <本次改动>
 ```
 
-**单元测试需要显式打开**（GoogleTest 走 `FetchContent`，要联网）：
+**单元测试需要显式打开**（GoogleTest 走 `FetchContent`，要联网），
+且**用独立的构建目录** `engine\build-tests`，避免每次跑测试都重配主构建：
 
 ```powershell
-cmake -S engine -B engine\build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAI2048_BUILD_TESTS=ON
-cmake --build engine\build
-ctest --test-dir engine\build --output-on-failure
+cmake -S engine -B engine\build-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DAI2048_BUILD_TESTS=ON
+cmake --build engine\build-tests
+ctest --test-dir engine\build-tests --output-on-failure
 ```
 
-首次配置会联网拉 GoogleTest（已实测 `git ls-remote` 可达）。**离线环境下这一步会失败**，
-此时只跑不带测试的构建。
+实测数据：首次配置要联网拉 GoogleTest，**耗时约 5.5 分钟**（333.7 秒）；
+之后增量构建约 1 分钟。**离线环境下这一步会失败**，此时只跑不带测试的构建。
+
+> ⚠️ `.gitignore` 里必须用 `build*/` 而不是 `build/` —— 本项目有两个构建目录，
+> 只写 `build/` 会漏掉 `build-tests/`，把 GoogleTest 的整个检出（约 7 MB）提交进去。
 
 改动 AI 或规则时，**额外**要给出与上一版的对照表（见「项目专属限制」第一条）。
 
