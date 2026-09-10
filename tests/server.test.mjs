@@ -70,18 +70,18 @@ function tryConnect(port) {
  */
 async function startServer() {
   const port = await findFreePort();
+
+  // 同时留一份**原始字节**：编码类断言必须查字节，查字符串捕不到乱码
+  // （GBK 误读产生的乱码在字节层面仍是合法 UTF-8）。
+  const chunks = [];
   const child = spawn(SERVER_EXE, ['--port', String(port), '--depth', '4'], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  let output = '';
   let exited = null;
-  child.stdout.on('data', (chunk) => {
-    output += chunk.toString('utf8');
-  });
-  child.stderr.on('data', (chunk) => {
-    output += chunk.toString('utf8');
-  });
+  const onData = (chunk) => chunks.push(chunk);
+  child.stdout.on('data', onData);
+  child.stderr.on('data', onData);
   child.on('exit', (code) => {
     exited = code;
   });
@@ -89,16 +89,25 @@ async function startServer() {
   const deadline = Date.now() + 10000;
   for (;;) {
     if (exited !== null) {
-      throw new Error(`服务端启动即退出（code ${exited}）：\n${output}`);
+      throw new Error(
+        `服务端启动即退出（code ${exited}）：\n${Buffer.concat(chunks).toString('utf8')}`
+      );
     }
     if (await tryConnect(port)) break;
     if (Date.now() > deadline) {
-      throw new Error(`服务端 10 秒内未监听 ${port}，输出：\n${output}`);
+      throw new Error(
+        `服务端 10 秒内未监听 ${port}，输出：\n${Buffer.concat(chunks).toString('utf8')}`
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
-  return { child, port, readOutput: () => output };
+  return {
+    child,
+    port,
+    readOutput: () => Buffer.concat(chunks).toString('utf8'),
+    readOutputBuffer: () => Buffer.concat(chunks),
+  };
 }
 
 const FULL_BOARD = [
@@ -130,7 +139,7 @@ async function main() {
     process.exit(1);
   }
 
-  const { child, port, readOutput } = await startServer();
+  const { child, port, readOutput, readOutputBuffer } = await startServer();
   const url = `ws://127.0.0.1:${port}`;
   const clients = [];
 
@@ -145,6 +154,31 @@ async function main() {
       banner.includes('已启动') && banner.includes(String(port)),
       `输出长度 ${banner.length}`
     );
+
+    // 编码断言必须**查字节**，不能只查字符串。
+    //
+    // 踩过的坑：曾经只断言"输出里有'已启动'"，测试全绿，但双击运行时
+    // Windows 控制台按 GBK(936) 解读 UTF-8 字节，用户看到的是
+    // "锛堣鍒欓泦" 这样的乱码。乱码在**字节层面仍是合法 UTF-8**，
+    // 所以字符串断言完全捕不到 —— 只有比对十六进制才行。
+    const raw = readOutputBuffer();
+    const expectedBytes = Buffer.from('已启动', 'utf8'); // E5 B7 B2 E5 90 AF E5 8A A8
+    let byteIndex = -1;
+    for (let i = 0; i + expectedBytes.length <= raw.length; i++) {
+      if (raw.subarray(i, i + expectedBytes.length).equals(expectedBytes)) {
+        byteIndex = i;
+        break;
+      }
+    }
+    check(
+      "中文按 UTF-8 原始字节输出（含 E5 B7 B2…），未被转成 GBK",
+      byteIndex >= 0,
+      byteIndex >= 0
+        ? `偏移 ${byteIndex}`
+        : `未找到，前 32 字节：${raw.subarray(0, 32).toString('hex')}`
+    );
+
+    console.log(`      （启动输出前 24 字节：${raw.subarray(0, 24).toString('hex')}）`);
 
     console.log('\n[1] 握手');
     const client = await connectWebSocket(url).catch((error) => {

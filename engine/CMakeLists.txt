@@ -50,6 +50,7 @@ add_library(ai2048_core STATIC
   src/ai/evaluate.cpp
   src/ai/search.cpp
   src/core/board.cpp
+  src/core/console.cpp
   src/core/game.cpp
   src/core/rng.cpp
   src/core/version.cpp
@@ -121,6 +122,7 @@ if(AI2048_BUILD_TESTS)
 
   add_executable(ai2048_tests
     tests/board_test.cpp
+    tests/console_test.cpp
     tests/net_test.cpp
   )
   target_link_libraries(ai2048_tests

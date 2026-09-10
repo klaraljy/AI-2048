@@ -253,8 +253,8 @@ bool SocketServer::Send(ConnectionId id, const std::string& data) {
   std::size_t sent_total = 0;
   int retries = 0;
   while (sent_total < data.size()) {
-    const int sent = send(ToRaw(id), data.data() + sent_total,
-                          static_cast<int>(data.size() - sent_total), 0);
+    const int sent =
+        send(ToRaw(id), data.data() + sent_total, static_cast<int>(data.size() - sent_total), 0);
     if (sent > 0) {
       sent_total += static_cast<std::size_t>(sent);
       continue;

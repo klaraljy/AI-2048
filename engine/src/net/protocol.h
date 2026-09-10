@@ -39,7 +39,7 @@ struct Session {
   enum class Phase { kHandshake, kOpen };
 
   Phase phase = Phase::kHandshake;
-  std::string buffer;      // 握手阶段是 HTTP 文本，之后是帧字节
+  std::string buffer;  // 握手阶段是 HTTP 文本，之后是帧字节
   bool close_after_send = false;
 
   // 配置与搜索状态。每连接一份 —— 不同客户端可以跑不同深度。

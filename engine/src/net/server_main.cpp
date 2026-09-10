@@ -23,11 +23,12 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <winsock2.h>
 #include <windows.h>
+#include <winsock2.h>
 #endif
 
 #include "ai2048/ai2048.h"
+#include "core/console.h"
 #include "net/protocol.h"
 #include "net/socket_server.h"
 
@@ -87,6 +88,10 @@ void PrintUsage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // 双击运行时控制台默认是 GBK，中文会显示成乱码。必须在任何输出之前切到 UTF-8。
+  // 输出被重定向时这个调用是空操作，字节保持原样（测试脚本按 UTF-8 读）。
+  ai2048::EnableUtf8Console();
+
   // 关掉 stdout 的全缓冲。
   //
   // 默认情况下 stdout 接终端是行缓冲（每行都出），但一旦重定向到管道或文件
@@ -117,19 +122,17 @@ int main(int argc, char** argv) {
 
   std::string log_prefix;
   ai2048::net::ProtocolHandler handler(&server, &log_prefix);
-  server.SetCallbacks(
-      [&handler](ai2048::net::ConnectionId id) { handler.OnOpen(id); },
-      [&handler](ai2048::net::ConnectionId id, const char* data, std::size_t length) {
-        return handler.OnData(id, data, length);
-      },
-      [&handler](ai2048::net::ConnectionId id) { handler.OnClose(id); });
+  server.SetCallbacks([&handler](ai2048::net::ConnectionId id) { handler.OnOpen(id); },
+                      [&handler](ai2048::net::ConnectionId id, const char* data,
+                                 std::size_t length) { return handler.OnData(id, data, length); },
+                      [&handler](ai2048::net::ConnectionId id) { handler.OnClose(id); });
 
   std::cout << "ai2048-server " << ai2048::VersionString() << "（规则集 "
             << ai2048::RulesetVersion() << "）已启动\n";
   std::cout << "  监听    ws://" << options.host << ":" << server.port() << "\n";
   std::cout << "  默认深度 " << options.depth << "\n";
-  std::cout << "  前端连 http://<前端地址>/?engine=ws://" << options.host << ":"
-            << server.port() << "\n";
+  std::cout << "  前端连 http://<前端地址>/?engine=ws://" << options.host << ":" << server.port()
+            << "\n";
   std::cout << "  按 Ctrl+C 停止\n";
 
   server.Run([] { return g_stop.load(); });

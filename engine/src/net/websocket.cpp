@@ -83,8 +83,9 @@ WsDecodeStatus DecodeFrame(std::string* buffer, WsFrame* frame, std::string* err
   std::size_t offset = 2;
   if (payload_length == 126) {
     if (buffer->size() < offset + 2) return WsDecodeStatus::kIncomplete;
-    payload_length = (static_cast<std::uint64_t>(static_cast<unsigned char>((*buffer)[offset])) << 8) |
-                     static_cast<unsigned char>((*buffer)[offset + 1]);
+    payload_length =
+        (static_cast<std::uint64_t>(static_cast<unsigned char>((*buffer)[offset])) << 8) |
+        static_cast<unsigned char>((*buffer)[offset + 1]);
     offset += 2;
   } else if (payload_length == 127) {
     if (buffer->size() < offset + 8) return WsDecodeStatus::kIncomplete;
@@ -118,8 +119,8 @@ WsDecodeStatus DecodeFrame(std::string* buffer, WsFrame* frame, std::string* err
   frame->payload.resize(static_cast<std::size_t>(payload_length));
   for (std::size_t i = 0; i < frame->payload.size(); ++i) {
     // unmask：payload[i] ^= mask[i % 4]。漏掉这一步请求体全是乱码。
-    frame->payload[i] = static_cast<char>(static_cast<unsigned char>((*buffer)[offset + i]) ^
-                                          mask[i % 4]);
+    frame->payload[i] =
+        static_cast<char>(static_cast<unsigned char>((*buffer)[offset + i]) ^ mask[i % 4]);
   }
 
   buffer->erase(0, total);

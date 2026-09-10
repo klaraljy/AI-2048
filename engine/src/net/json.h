@@ -69,8 +69,7 @@ class Value {
   [[nodiscard]] std::int64_t GetInt(std::string_view key, std::int64_t fallback = 0) const noexcept;
   [[nodiscard]] double GetNumber(std::string_view key, double fallback = 0.0) const noexcept;
   [[nodiscard]] bool GetBool(std::string_view key, bool fallback = false) const noexcept;
-  [[nodiscard]] std::string GetString(std::string_view key,
-                                      std::string_view fallback = "") const;
+  [[nodiscard]] std::string GetString(std::string_view key, std::string_view fallback = "") const;
 
   // 追加到数组 / 插入到对象（构建响应用）
   void Push(Value value);

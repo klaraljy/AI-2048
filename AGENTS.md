@@ -188,11 +188,39 @@ engine\build\ai2048-cli.exe selfcheck --seeds benchmarks\seeds-v1.txt
 # 跑批
 engine\build\ai2048-cli.exe bench --seeds benchmarks\seeds-v1.txt --out docs\results\
 
-# 起服务，然后打开 web\index.html
-engine\build\ai2048-server.exe --port 8765
+# 起服务（默认 127.0.0.1:8765，默认深度 8）
+engine\build\ai2048-server.exe
+engine\build\ai2048-server.exe --port 8765 --depth 8
+
+# 前端：ES module 在 file:// 下会被拦，必须走 HTTP。另开一个终端：
+npx serve web
+# 浏览器打开它给出的地址即可
 ```
 
-> ⚠️ 以上命令为**目标形态**，尚未跑通 —— 代码还不存在。
+> **双击也能跑** `ai2048-server.exe`：用默认端口与深度直接启动。
+>
+> ⚠️ 服务端**没有任何鉴权**，默认只监听回环地址。把它改到外部地址等于把 CPU 交出去。
+
+### 中文显示与控制台编码
+
+Windows 控制台默认用本地代码页（简中系统是 GBK / 936）解读程序输出，
+而本项目源码与输出都是 UTF-8 —— 于是双击运行时 `已启动` 会显示成 `锛堣鍒欓泦`。
+**这不是程序输出错了，是两边编码没谈拢。**
+
+两个入口（`ai2048-cli` / `ai2048-server`）都在 `main` 开头调用
+`ai2048::EnableUtf8Console()`，把控制台代码页切成 UTF-8（65001）后再输出。
+
+- **不加"仅当 stdout 是控制台才切"的判断。** 曾经加过，是错的：
+  那样会让"双击时正常"和"重定向后字节正确"变成两条分叉路径，
+  而其中一条永远不会被测试覆盖到（测试子进程的 stdout 恰好就是管道，
+  于是测试查了个寂寞）。实测表明被重定向时设置它**没有副作用** ——
+  写出的字节本来就与控制台代码页无关。
+- 防回归有两层测试，缺一不可：
+  - `ConsoleCodepage.*`（C++）：起一个**真正带控制台**的子进程，
+    先设成 936 复现双击状态，再验子进程把它切到了 65001。
+  - `server.test.mjs` 的字节断言：验输出**原始字节**含 `E5 B7 B2`（"已"）。
+    只断言字符串是不够的 —— GBK 误读产生的乱码在字节层面仍是合法 UTF-8，
+    字符串断言完全捕不到。
 
 ## 格式化与静态检查
 

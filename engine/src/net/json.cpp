@@ -487,9 +487,7 @@ Value::Value(std::string value) : type_(Type::kString), string_(std::move(value)
 Value::Value(Array value) : type_(Type::kArray), array_(std::move(value)) {}
 Value::Value(Object value) : type_(Type::kObject), object_(std::move(value)) {}
 
-bool Value::AsBool(bool fallback) const noexcept {
-  return type_ == Type::kBool ? bool_ : fallback;
-}
+bool Value::AsBool(bool fallback) const noexcept { return type_ == Type::kBool ? bool_ : fallback; }
 
 double Value::AsNumber(double fallback) const noexcept {
   return type_ == Type::kNumber ? number_ : fallback;

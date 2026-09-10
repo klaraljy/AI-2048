@@ -23,6 +23,7 @@
 #include "ai/search.h"
 #include "ai2048/ai2048.h"
 #include "core/board.h"
+#include "core/console.h"
 #include "core/game.h"
 #include "net/json.h"
 
@@ -891,6 +892,10 @@ void PrintUsage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // 双击运行时控制台默认是 GBK，中文会显示成乱码。必须在任何输出之前切到 UTF-8。
+  // 输出被重定向时这个调用是空操作，字节保持原样（跑批与对拍都按 UTF-8 读）。
+  ai2048::EnableUtf8Console();
+
   const std::string_view command = (argc > 1) ? argv[1] : "";
 
   if (command.empty() || command == "-h" || command == "--help") {

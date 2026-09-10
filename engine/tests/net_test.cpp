@@ -7,12 +7,11 @@
 //   Base64: RFC 4648 的标准向量
 //   WebSocket 握手: RFC 6455 第 1.3 节的示例
 
-#include <string>
-#include <string_view>
-
 #include <gtest/gtest.h>
 
 #include <array>
+#include <string>
+#include <string_view>
 
 #include "net/sha1.h"
 #include "net/websocket.h"
@@ -24,13 +23,9 @@ namespace {
 // SHA-1 标准向量（RFC 3174 / FIPS 180-1）
 // ---------------------------------------------------------------------------
 
-TEST(Sha1, EmptyString) {
-  EXPECT_EQ(Sha1Hex(""), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
-}
+TEST(Sha1, EmptyString) { EXPECT_EQ(Sha1Hex(""), "da39a3ee5e6b4b0d3255bfef95601890afd80709"); }
 
-TEST(Sha1, Abc) {
-  EXPECT_EQ(Sha1Hex("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
-}
+TEST(Sha1, Abc) { EXPECT_EQ(Sha1Hex("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d"); }
 
 // 这条覆盖"一个块放不下"的路径
 TEST(Sha1, LongStringAcrossBlocks) {
@@ -325,7 +320,8 @@ TEST(WsFrame, RoundTripsServerEncoding) {
     } else if (declared == 127) {
       declared = 0;
       for (int i = 0; i < 8; ++i) {
-        declared = (declared << 8) | static_cast<unsigned char>(encoded[2 + static_cast<std::size_t>(i)]);
+        declared =
+            (declared << 8) | static_cast<unsigned char>(encoded[2 + static_cast<std::size_t>(i)]);
       }
       header = 10;
     }
@@ -393,12 +389,12 @@ TEST(WsHandshake, RejectsMissingFields) {
       "GET / HTTP/1.1\r\nConnection: Upgrade\r\nSec-WebSocket-Key: abc\r\n\r\n";
   EXPECT_FALSE(ParseUpgradeRequest(no_upgrade).valid);
 
-  const std::string no_key =
-      "GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+  const std::string no_key = "GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
   EXPECT_FALSE(ParseUpgradeRequest(no_key).valid);
 
   const std::string wrong_method =
-      "POST / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: abc\r\n\r\n";
+      "POST / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: "
+      "abc\r\n\r\n";
   EXPECT_FALSE(ParseUpgradeRequest(wrong_method).valid);
 
   const std::string truncated = "GET / HTTP/1.1\r\nUpgrade: websocket\r\n";

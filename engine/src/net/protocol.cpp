@@ -123,7 +123,8 @@ void ApplyConfig(const Value& config, ai2048::SearchConfig* target) {
   if (target->min_depth > target->max_depth) std::swap(target->min_depth, target->max_depth);
 
   target->time_budget_ms = std::max(0, int_or("timeBudgetMs", target->time_budget_ms));
-  target->chance_sample_limit = std::max(0, int_or("chanceSampleLimit", target->chance_sample_limit));
+  target->chance_sample_limit =
+      std::max(0, int_or("chanceSampleLimit", target->chance_sample_limit));
 
   const Value* weights = config.Find("weights");
   if (weights != nullptr && weights->IsObject()) {
@@ -161,7 +162,7 @@ void ApplyConfig(const Value& config, ai2048::SearchConfig* target) {
 
 /** 组装 debugInfo。前端只用它显示，字段多了不影响兼容。 */
 [[nodiscard]] std::string BuildDebugInfo(const ai2048::SearchResult& result,
-                                        const ai2048::SearchConfig& config, bool timed_out) {
+                                         const ai2048::SearchConfig& config, bool timed_out) {
   Value info;
   info.Set("aiType", Value(std::string("expectimax")));
   info.Set("baseDepth", Value(config.base_depth));
@@ -170,8 +171,7 @@ void ApplyConfig(const Value& config, ai2048::SearchConfig* target) {
   info.Set("chanceNodes", Value(static_cast<double>(result.stats.chance_nodes)));
   info.Set("cacheSize", Value(static_cast<double>(result.stats.tt_stores)));
   info.Set("cacheHits", Value(static_cast<double>(result.stats.tt_hits)));
-  info.Set("prunedByProbability",
-           Value(static_cast<double>(result.stats.pruned_by_probability)));
+  info.Set("prunedByProbability", Value(static_cast<double>(result.stats.pruned_by_probability)));
   info.Set("timeCostMs", Value(result.stats.elapsed_ms));
   info.Set("timedOut", Value(timed_out || result.stats.timed_out));
 
@@ -238,7 +238,8 @@ bool ProtocolHandler::HandleHandshake(ConnectionId id, Session* session) {
     return false;
   }
 
-  static_cast<void>(server_->Send(id, BuildUpgradeResponse(ComputeAcceptKey(request.sec_websocket_key))));
+  static_cast<void>(
+      server_->Send(id, BuildUpgradeResponse(ComputeAcceptKey(request.sec_websocket_key))));
 
   // 关键：握手请求之后可能**已经跟着第一帧**（客户端常常一起发），
   // 所以要把头部之后剩下的字节保留下来交给帧解析，不能丢弃。
