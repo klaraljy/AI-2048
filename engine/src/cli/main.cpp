@@ -160,6 +160,14 @@ struct Options {
       weights->snake = value;
     } else if (key == "maxtile") {
       weights->max_tile = value;
+    } else if (key == "cc") {
+      weights->corner_control = value;
+    } else if (key == "edge") {
+      weights->edge_support = value;
+    } else if (key == "grad") {
+      weights->gradient = value;
+    } else if (key == "bias") {
+      weights->anchor_bias = value;
     } else {
       std::cerr << "未知权重键: " << key << "\n";
       return false;

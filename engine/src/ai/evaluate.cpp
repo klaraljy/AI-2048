@@ -124,7 +124,24 @@ struct RawTerms {
   float snake = 0.0F;
   int max_exponent = 0;
   bool max_in_corner = false;
+  int max_row = 0;
+  int max_col = 0;
+  float edge_support = 0.0F;
+  float gradient = 0.0F;
 };
+
+// 行内梯度：按位置递减加权求和。
+// 奖励"从左到右递减"的排布 —— 比单调性更细，因为它看落差出现在**哪里**。
+// 用指数而不是数值，避免大数字把量级拉爆。
+[[nodiscard]] float RowGradient(PackedRow row) {
+  static constexpr std::array<int, kBoardSize> kPositionWeights = {8, 4, 2, 1};
+  float sum = 0.0F;
+  for (int i = 0; i < kBoardSize; ++i) {
+    const int exponent = static_cast<int>((row >> (kBitsPerCell * i)) & 0xFu);
+    sum += static_cast<float>(exponent * kPositionWeights[static_cast<std::size_t>(i)]);
+  }
+  return sum;
+}
 
 [[nodiscard]] RawTerms ComputeTerms(std::uint64_t board) noexcept {
   const PerRowTables& tables = Tables();
@@ -136,6 +153,7 @@ struct RawTerms {
     terms.monotonicity += tables.monotonicity[packed];
     terms.smoothness += tables.smoothness[packed];
     terms.merge += tables.merge[packed];
+    terms.gradient += RowGradient(packed);
   }
 
   // 列（转置后同样按行处理）
@@ -145,9 +163,10 @@ struct RawTerms {
     terms.monotonicity += tables.monotonicity[packed];
     terms.smoothness += tables.smoothness[packed];
     terms.merge += tables.merge[packed];
+    terms.gradient += RowGradient(packed);
   }
 
-  // 蛇形 + 空格 + 最大牌
+  // 蛇形 + 空格 + 最大牌位置
   int snake_sum = 0;
   int max_index = 0;
   for (int index = 0; index < kCellCount; ++index) {
@@ -164,10 +183,20 @@ struct RawTerms {
   }
   terms.snake = static_cast<float>(snake_sum) / static_cast<float>(kSnakeWeightSum);
 
-  const int max_row = max_index / kBoardSize;
-  const int max_col = max_index % kBoardSize;
-  terms.max_in_corner =
-      (max_row == 0 || max_row == kBoardSize - 1) && (max_col == 0 || max_col == kBoardSize - 1);
+  terms.max_row = max_index / kBoardSize;
+  terms.max_col = max_index % kBoardSize;
+  terms.max_in_corner = (terms.max_row == 0 || terms.max_row == kBoardSize - 1) &&
+                        (terms.max_col == 0 || terms.max_col == kBoardSize - 1);
+
+  // 边支撑：最大牌所在行与列上的等级之和。
+  // 大牌靠边时需要沿边有牌"顶着"，否则一次不利生成就能把它挤离角。
+  int edge_sum = 0;
+  for (int i = 0; i < kBoardSize; ++i) {
+    edge_sum += GetExponent(board, terms.max_row * kBoardSize + i);
+    edge_sum += GetExponent(board, i * kBoardSize + terms.max_col);
+  }
+  terms.edge_support = static_cast<float>(edge_sum);
+
   return terms;
 }
 
@@ -190,8 +219,37 @@ struct RawTerms {
                                                        static_cast<float>(kCellCount))
                                    : 0.0F;
 
+  // 锚点控制：到**最近的**那个角的曼哈顿距离。
+  // 距离 0 给满额奖励，越远扣得越狠。
+  const int distance_to_row_edge = std::min(terms.max_row, kBoardSize - 1 - terms.max_row);
+  const int distance_to_col_edge = std::min(terms.max_col, kBoardSize - 1 - terms.max_col);
+  const int anchor_distance = distance_to_row_edge + distance_to_col_edge;
+
+  float anchor_factor = 0.0F;
+  switch (anchor_distance) {
+    case 0:
+      anchor_factor = 1.0F;
+      break;
+    case 1:
+      anchor_factor = 0.2F;
+      break;
+    case 2:
+      anchor_factor = -0.6F;
+      break;
+    default:
+      anchor_factor = -1.2F;
+      break;
+  }
+  out.corner_control = weights.corner_control * anchor_factor;
+
+  // 边支撑：大牌靠边时需要沿边有牌顶着。
+  out.edge_support = terms.edge_support * weights.edge_support;
+
+  // 梯度：奖励沿一个方向递减的排布。
+  out.gradient = terms.gradient * weights.gradient;
+
   out.total = out.empty + out.monotonicity + out.smoothness + out.merge + out.corner + out.snake +
-              out.max_tile;
+              out.max_tile + out.corner_control + out.edge_support + out.gradient;
   return out;
 }
 

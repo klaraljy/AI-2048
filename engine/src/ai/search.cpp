@@ -287,6 +287,56 @@ class Searcher {
   return Evaluate(board, weights);
 }
 
+// 这一步是否把最大牌推向了"离它最近的那个角"。
+// 返回 +1（靠近）/ 0（不动）/ -1（远离）。
+//
+// 只看最大牌，不看别的牌 —— 它是整条链的锚，锚一乱全盘皆输。
+[[nodiscard]] float AnchorBiasForMove(std::uint64_t board, Direction direction) {
+  int max_index = -1;
+  int max_exponent = 0;
+  for (int index = 0; index < kCellCount; ++index) {
+    const int exponent = GetExponent(board, index);
+    if (exponent > max_exponent) {
+      max_exponent = exponent;
+      max_index = index;
+    }
+  }
+  if (max_index < 0) return 0.0F;
+
+  const int row = max_index / kBoardSize;
+  const int col = max_index % kBoardSize;
+
+  // 最近的那个角
+  const int target_row = (row * 2 < kBoardSize) ? 0 : kBoardSize - 1;
+  const int target_col = (col * 2 < kBoardSize) ? 0 : kBoardSize - 1;
+
+  const auto distance = [](int r, int c, int tr, int tc) {
+    return std::abs(r - tr) + std::abs(c - tc);
+  };
+  const int before = distance(row, col, target_row, target_col);
+
+  // 走子之后最大牌在哪
+  const MoveResult move = ApplyMove(board, direction);
+  if (!move.moved) return 0.0F;
+
+  int next_index = -1;
+  int next_max = 0;
+  for (int index = 0; index < kCellCount; ++index) {
+    const int exponent = GetExponent(move.board, index);
+    if (exponent > next_max) {
+      next_max = exponent;
+      next_index = index;
+    }
+  }
+  if (next_index < 0) return 0.0F;
+
+  const int after =
+      distance(next_index / kBoardSize, next_index % kBoardSize, target_row, target_col);
+  if (after < before) return 1.0F;
+  if (after > before) return -1.0F;
+  return 0.0F;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -387,6 +437,13 @@ SearchResult SearchBestMove(std::uint64_t board, const SearchConfig& config,
         // kUp/kDown 同轴，kLeft/kRight 同轴：互为反向
         total -= config.anti_oscillation_penalty;
       }
+    }
+
+    // 锚点偏好：如果这一步把最大牌往"离它最近的那个角"推，小幅加分。
+    // 目的不是替代评估函数，而是在几个搜索值接近的方向里，
+    // 优先选那个能维持大牌位置一致性的 —— 来回换角会让链断掉。
+    if (config.weights.anchor_bias != 0.0F) {
+      total += config.weights.anchor_bias * AnchorBiasForMove(board, candidates[i].direction);
     }
 
     candidates[i].future_score = best_value[i];
