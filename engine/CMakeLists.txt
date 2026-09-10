@@ -47,6 +47,8 @@ endfunction()
 # 详见 AGENTS.md「移动端」一节。
 # ---------------------------------------------------------------------------
 add_library(ai2048_core STATIC
+  src/ai/evaluate.cpp
+  src/ai/search.cpp
   src/core/board.cpp
   src/core/game.cpp
   src/core/rng.cpp

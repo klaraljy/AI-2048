@@ -19,6 +19,8 @@
 #include <thread>
 #include <vector>
 
+#include "ai/evaluate.h"
+#include "ai/search.h"
 #include "ai2048/ai2048.h"
 #include "core/board.h"
 #include "core/game.h"
@@ -27,6 +29,8 @@ namespace {
 
 using ai2048::Direction;
 using ai2048::Game;
+using ai2048::SearchConfig;
+using ai2048::SearchResult;
 
 // ---------------------------------------------------------------------------
 // 参数解析（手写，不引第三方库 —— 总共就这么几个选项）
@@ -39,6 +43,10 @@ struct Options {
   int threads = 0;
   int every = 0;  // play 每多少步打印一次；0 = 只打印开头与结尾
   std::string tag;
+  int depth = 6;
+  int time_budget_ms = 0;
+  int chance_limit = 0;
+  bool use_tt = true;
 };
 
 [[nodiscard]] bool ParseOptions(int argc, char** argv, Options* options) {
@@ -78,6 +86,14 @@ struct Options {
       if (!take_int(&options->threads)) return false;
     } else if (arg == "--every") {
       if (!take_int(&options->every)) return false;
+    } else if (arg == "--depth") {
+      if (!take_int(&options->depth)) return false;
+    } else if (arg == "--time") {
+      if (!take_int(&options->time_budget_ms)) return false;
+    } else if (arg == "--chance-limit") {
+      if (!take_int(&options->chance_limit)) return false;
+    } else if (arg == "--no-tt") {
+      options->use_tt = false;
     } else if (arg == "--tag") {
       if (!take(&options->tag)) return false;
     } else {
@@ -86,6 +102,21 @@ struct Options {
     }
   }
   return true;
+}
+
+[[nodiscard]] SearchConfig MakeSearchConfig(const Options& options) {
+  SearchConfig config;
+  config.base_depth = options.depth;
+  config.time_budget_ms = options.time_budget_ms;
+  config.chance_sample_limit = options.chance_limit;
+  return config;
+}
+
+// 每局一张置换表 —— **跨步复用**，不要每步新建。
+// 早期实现每步新建一张 16MB 的表，单局 939 步白花 8.8 秒，
+// 而搜索本身只要 0.15 秒。详见 search.h 里 TranspositionTable 的说明。
+[[nodiscard]] std::size_t MakeTableCapacity(const Options& options) {
+  return options.use_tt ? ai2048::TranspositionTable::kDefaultCapacity : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,16 +159,11 @@ struct Options {
 }
 
 // ---------------------------------------------------------------------------
-// 确定性对局
+// 用 AI 打一局
 //
-// 走子策略是**刻意平凡的**：按固定顺序取第一个合法方向。
-// 里程碑 1 要证明的是"引擎确定"，不是"AI 强"。这个策略的存在意义是让一局
-// 能跑到终局，从而验证走子/合并/生成/终局判定整条链路。
-// 真正的 AI 属于里程碑 2，会以策略对象的形式接进来。
+// 传入的 config 基深度会被逐局拷贝 —— 搜索数据（节点数等）不参与对局逻辑，
+// 所以并行跑批时每局各用一份配置，互不干扰。
 // ---------------------------------------------------------------------------
-
-inline constexpr std::array<Direction, 4> kPolicyOrder = {Direction::kLeft, Direction::kDown,
-                                                          Direction::kRight, Direction::kUp};
 
 struct PlayOutcome {
   std::string final_state;
@@ -146,17 +172,45 @@ struct PlayOutcome {
   int max_exponent = 0;
   bool overflow = false;
   double microseconds = 0.0;
+  std::uint64_t nodes = 0;
+  double search_ms = 0.0;
+  double step_ms = 0.0;
+  int reached_depth = 0;
+  bool timed_out = false;
 };
 
-[[nodiscard]] PlayOutcome PlayOneGame(std::uint64_t seed) {
+[[nodiscard]] PlayOutcome PlayOneGame(std::uint64_t seed, const SearchConfig& config,
+                                      std::size_t table_capacity) {
   const auto begin = std::chrono::steady_clock::now();
 
   Game game(seed);
+  std::optional<Direction> last_move;
+  // 每局一张表，局内跨步复用。表内容只由棋盘与深度决定，不依赖搜索历史，
+  // 所以复用不影响结果 —— 但每局重新构造一份，保证同种子的两次运行完全一致。
+  ai2048::TranspositionTable table(table_capacity);
+
+  std::uint64_t nodes = 0;
+  double search_ms = 0.0;
+  int reached_depth = 0;
+  bool timed_out = false;
+  double step_ms = 0.0;
+
   while (!game.game_over()) {
-    const std::optional<Direction> direction = ai2048::FindAnyLegalMove(game.board());
-    if (!direction.has_value()) break;
-    // 里程碑 1 只关心终局结果与确定性，不看单步细节。
-    static_cast<void>(game.Step(*direction));
+    const SearchResult decision = ai2048::SearchBestMove(game.board(), config, &table, last_move);
+    if (!decision.move.has_value()) break;
+
+    nodes += decision.stats.nodes;
+    search_ms += decision.stats.elapsed_ms;
+    reached_depth = std::max(reached_depth, decision.stats.reached_depth);
+    timed_out = timed_out || decision.stats.timed_out;
+
+    const auto step_begin = std::chrono::steady_clock::now();
+    const ai2048::StepResult step = game.Step(*decision.move);
+    step_ms +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_begin)
+            .count();
+    if (!step.moved) break;  // 搜索给出的方向不合法 —— 不该发生，防御性处理
+    last_move = decision.move;
   }
 
   const auto end = std::chrono::steady_clock::now();
@@ -168,11 +222,19 @@ struct PlayOutcome {
   outcome.max_exponent = game.max_exponent();
   outcome.overflow = game.saw_overflow();
   outcome.microseconds = std::chrono::duration<double, std::micro>(end - begin).count();
+  outcome.nodes = nodes;
+  outcome.search_ms = search_ms;
+  outcome.step_ms = step_ms;
+  outcome.reached_depth = reached_depth;
+  outcome.timed_out = timed_out;
   return outcome;
 }
 
 // ---------------------------------------------------------------------------
-// selfcheck：里程碑 1 的验收命令
+// selfcheck：同种子重跑两次，校验逐字节一致
+//
+// 注意：**不限时**时搜索是完全确定的。加了 --time 之后会引入机器相关的
+// 深度差异，那时 selfcheck 可能失败 —— 这是预期行为，不是 bug。
 // ---------------------------------------------------------------------------
 
 int RunSelfCheck(const Options& options) {
@@ -188,12 +250,19 @@ int RunSelfCheck(const Options& options) {
     return 1;
   }
 
-  std::cout << "selfcheck: 种子集 " << options.seeds_path << "，共 " << seeds->size() << " 局\n";
+  std::cout << "selfcheck: 种子集 " << options.seeds_path << "，共 " << seeds->size() << " 局"
+            << "，深度 " << options.depth;
+  if (options.time_budget_ms > 0) {
+    std::cout << "，时间预算 " << options.time_budget_ms << "ms（会引入机器相关差异）";
+  }
+  std::cout << "\n";
 
+  const SearchConfig config = MakeSearchConfig(options);
+  const std::size_t table_capacity = MakeTableCapacity(options);
   int failures = 0;
   for (const std::uint64_t seed : *seeds) {
-    const PlayOutcome first = PlayOneGame(seed);
-    const PlayOutcome second = PlayOneGame(seed);
+    const PlayOutcome first = PlayOneGame(seed, config, table_capacity);
+    const PlayOutcome second = PlayOneGame(seed, config, table_capacity);
     if (first.final_state != second.final_state) {
       ++failures;
       std::cerr << "  ✗ seed " << seed << " 两次运行结果不一致\n"
@@ -208,6 +277,10 @@ int RunSelfCheck(const Options& options) {
 
   if (failures != 0) {
     std::cerr << "selfcheck 失败: " << failures << " 局不可复现\n";
+    if (options.time_budget_ms > 0) {
+      std::cerr << "提示: 使用了 --time，超时会按机器速度截断搜索深度。\n"
+                << "      要验证确定性请去掉 --time。\n";
+    }
     return 1;
   }
   std::cout << "selfcheck 通过: " << seeds->size() << " 局全部可复现（逐字节一致）\n";
@@ -224,7 +297,12 @@ struct Summary {
   std::uint64_t min_score = 0;
   std::uint64_t max_score = 0;
   double mean_steps = 0.0;
-  double mean_milliseconds = 0.0;
+  double mean_seconds = 0.0;
+  double mean_nodes = 0.0;
+  double mean_search_ms = 0.0;
+  double mean_step_ms = 0.0;
+  int max_reached_depth = 0;
+  int timed_out_games = 0;
   std::array<int, 18> reached{};  // 到达 2^k 的局数，k = 1..17
   int overflow_games = 0;
 };
@@ -264,7 +342,10 @@ int RunBench(const Options& options) {
   std::vector<PlayOutcome> outcomes(seeds->size());
   std::mutex print_mutex;
   std::atomic<std::size_t> next{0};
+  std::atomic<int> completed{0};
 
+  const SearchConfig base_config = MakeSearchConfig(options);
+  const std::size_t table_capacity = MakeTableCapacity(options);
   const auto started = std::chrono::steady_clock::now();
 
   auto worker = [&]() {
@@ -272,12 +353,13 @@ int RunBench(const Options& options) {
       const std::size_t index = next.fetch_add(1);
       if (index >= seeds->size()) return;
 
+      // 每局用独立的配置副本（含独立的置换表），互不干扰。
       // 每局的结果只由 (*seeds)[index] 决定，与它跑在哪个线程无关 ——
-      // 这是"并行不改变结果"的必要条件，也是 selfcheck 能覆盖到的部分。
-      outcomes[index] = PlayOneGame((*seeds)[index]);
+      // 这是"并行不改变结果"的必要条件。
+      outcomes[index] = PlayOneGame((*seeds)[index], base_config, table_capacity);
 
-      const std::size_t done = index + 1;
-      if (done % 100 == 0 || done == seeds->size()) {
+      const int done = completed.fetch_add(1) + 1;
+      if (done % 50 == 0 || static_cast<std::size_t>(done) == seeds->size()) {
         std::lock_guard<std::mutex> lock(print_mutex);
         std::cout << "\r  进度 " << done << "/" << seeds->size() << std::flush;
       }
@@ -299,7 +381,12 @@ int RunBench(const Options& options) {
   for (const PlayOutcome& entry : outcomes) {
     summary.mean_score += static_cast<double>(entry.score);
     summary.mean_steps += entry.steps;
-    summary.mean_milliseconds += entry.microseconds / 1000.0;
+    summary.mean_seconds += entry.microseconds / 1e6;
+    summary.mean_nodes += static_cast<double>(entry.nodes);
+    summary.mean_search_ms += entry.search_ms;
+    summary.mean_step_ms += entry.step_ms;
+    summary.max_reached_depth = std::max(summary.max_reached_depth, entry.reached_depth);
+    if (entry.timed_out) ++summary.timed_out_games;
     summary.min_score = std::min(summary.min_score, entry.score);
     summary.max_score = std::max(summary.max_score, entry.score);
     if (entry.overflow) ++summary.overflow_games;
@@ -309,19 +396,35 @@ int RunBench(const Options& options) {
   }
   summary.mean_score /= summary.games;
   summary.mean_steps /= summary.games;
-  summary.mean_milliseconds /= summary.games;
+  summary.mean_seconds /= summary.games;
+  summary.mean_nodes /= summary.games;
+  summary.mean_search_ms /= summary.games;
 
   std::cout << "规则集版本 : " << ai2048::RulesetVersion() << "\n";
   if (!options.tag.empty()) std::cout << "标记       : " << options.tag << "\n";
+  std::cout << "基础深度   : " << options.depth;
+  if (options.time_budget_ms > 0) std::cout << "，时间预算 " << options.time_budget_ms << "ms";
+  if (options.chance_limit > 0) std::cout << "，chance 采样上限 " << options.chance_limit;
+  std::cout << "\n";
   std::cout << "局数       : " << summary.games << "\n";
   std::cout << "平均分     : " << static_cast<std::uint64_t>(std::llround(summary.mean_score))
             << "\n";
   std::cout << "分数区间   : " << summary.min_score << " .. " << summary.max_score << "\n";
   std::cout << "平均步数   : " << static_cast<std::uint64_t>(std::llround(summary.mean_steps))
             << "\n";
-  std::cout << "平均每局   : "
-            << static_cast<std::uint64_t>(std::llround(summary.mean_milliseconds)) << " ms\n";
+  std::cout << "平均每局   : " << summary.mean_seconds << " s（其中搜索 "
+            << summary.mean_search_ms / 1000.0 << " s，走子 " << summary.mean_step_ms / 1000.0
+            << " s，其它 "
+            << (summary.mean_seconds - summary.mean_search_ms / 1000.0 -
+                summary.mean_step_ms / 1000.0)
+            << " s）\n";
+  std::cout << "平均节点   : " << static_cast<std::uint64_t>(std::llround(summary.mean_nodes))
+            << " / 局\n";
+  std::cout << "最深达到   : " << summary.max_reached_depth << " 层\n";
   std::cout << "总耗时     : " << wall_seconds << " s（" << threads << " 线程）\n";
+  if (summary.timed_out_games > 0) {
+    std::cout << "超时局数   : " << summary.timed_out_games << "（结果与机器速度相关）\n";
+  }
   if (summary.overflow_games > 0) {
     std::cout << "碰到上限   : " << summary.overflow_games
               << " 局在 32768 处发生饱和合并（见 kMaxExponent）\n";
@@ -340,28 +443,43 @@ int RunBench(const Options& options) {
 }
 
 // ---------------------------------------------------------------------------
-// play：单局演示，用于里程碑 1 的当场演示
+// play：单局演示
 // ---------------------------------------------------------------------------
 
 int RunPlay(const Options& options) {
+  const SearchConfig config = MakeSearchConfig(options);
   Game game(options.seed);
-  std::cout << "seed=" << game.seed() << "  规则集=" << ai2048::RulesetVersion() << "\n";
+  std::optional<Direction> last_move;
+  ai2048::TranspositionTable table(MakeTableCapacity(options));
+
+  std::cout << "seed=" << game.seed() << "  规则集=" << ai2048::RulesetVersion()
+            << "  基础深度=" << options.depth;
+  if (options.time_budget_ms > 0) std::cout << "  时间预算=" << options.time_budget_ms << "ms";
+  std::cout << "\n";
   std::cout << ai2048::ToString(game.board()) << "\n\n";
 
   while (!game.game_over()) {
-    const std::optional<Direction> direction = ai2048::FindAnyLegalMove(game.board());
-    if (!direction.has_value()) break;
+    const SearchResult decision = ai2048::SearchBestMove(game.board(), config, &table, last_move);
+    if (!decision.move.has_value()) break;
 
-    const ai2048::StepResult step = game.Step(*direction);
+    const ai2048::StepResult step = game.Step(*decision.move);
     if (!step.moved) break;
+    last_move = decision.move;
 
     const bool show =
         options.every > 0 && (game.step_count() % static_cast<std::uint32_t>(options.every) == 0);
     if (show) {
-      std::cout << "第 " << game.step_count() << " 步 " << ai2048::DirectionName(*direction)
+      std::cout << "第 " << game.step_count() << " 步 " << ai2048::DirectionName(*decision.move)
                 << "  +" << step.score_gained << "  分数=" << game.score()
-                << "  最大块=" << game.max_tile() << "  轨迹=" << step.moves.size() << " 块\n";
-      std::cout << ai2048::ToString(game.board()) << "\n\n";
+                << "  最大块=" << game.max_tile() << "  深度=" << decision.stats.reached_depth
+                << "  节点=" << decision.stats.nodes << "  耗时=" << decision.stats.elapsed_ms
+                << "ms\n";
+      std::cout << ai2048::ToString(game.board()) << "\n";
+      for (const auto& evaluation : decision.evaluations) {
+        std::cout << "    " << ai2048::DirectionName(evaluation.direction)
+                  << "  评分=" << evaluation.total_score << "\n";
+      }
+      std::cout << "\n";
     }
   }
 
@@ -374,11 +492,16 @@ int RunPlay(const Options& options) {
 void PrintUsage() {
   std::cout << "ai2048-cli " << ai2048::VersionString() << " (ruleset " << ai2048::RulesetVersion()
             << ")\n"
-            << "用法:\n"
-            << "  ai2048-cli version\n"
-            << "  ai2048-cli play      [--seed N] [--every N]      跑一局并打印，用于演示\n"
-            << "  ai2048-cli selfcheck --seeds <文件>              同种子重跑两次，校验逐字节一致\n"
-            << "  ai2048-cli bench     --seeds <文件> [--limit N] [--threads N] [--tag T]\n";
+            << "通用选项:\n"
+            << "  --depth N         基础搜索深度，默认 6（偶数更自然）\n"
+            << "  --time N          每步时间预算（毫秒）。0 = 不限时（完全确定，可复现）\n"
+            << "  --chance-limit N  chance 节点采样上限。0 = 枚举全部空格\n"
+            << "  --no-tt           关闭置换表\n"
+            << "子命令:\n"
+            << "  version\n"
+            << "  play      [--seed N] [--every N]              让 AI 跑一局并打印\n"
+            << "  selfcheck --seeds <文件>                      同种子重跑两次，校验逐字节一致\n"
+            << "  bench     --seeds <文件> [--limit N] [--threads N] [--tag T]\n";
 }
 
 }  // namespace
@@ -407,6 +530,7 @@ int main(int argc, char** argv) {
   if (command == "play") return RunPlay(options);
   if (command == "selfcheck") return RunSelfCheck(options);
   if (command == "bench") return RunBench(options);
+
   std::cerr << "未知子命令: " << command << "\n\n";
   PrintUsage();
   return 1;
