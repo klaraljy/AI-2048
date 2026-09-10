@@ -262,17 +262,30 @@ npx serve web
 engine\build\ai2048-server.exe --port 8765
 ```
 
-**前端自动化测试**（Node 直跑，零依赖，不需要浏览器）：
+**测试**（Node 直跑，零依赖，不需要浏览器）：
 
 ```sh
-node tests\run-all.mjs         # 一次跑完下面四个（推荐）
+node tests\run-all.mjs         # 一次跑完全部六套（推荐）
 node tests\parity.test.mjs     # 规则一致性：与 C++ 引擎穷举对拍（262144 条 + 30 局）
+node tests\json-parity.test.mjs # 自写 JSON 解析器：与 JSON.parse 对拍
 node tests\renderer.test.mjs   # 渲染/动画：headless 跑真实 renderer
 node tests\input.test.mjs      # 输入：键位、滑动、输入锁
 node tests\degraded.test.mjs   # 降级路径：无 WebAudio、连不上引擎
+node tests\server.test.mjs     # 服务端端到端：真起 ai2048-server.exe 进程
 ```
 
-> `parity.test.mjs` 要先构建引擎（它调用 `ai2048-cli.exe trace` / `move` 取真值）。
+> `server.test.mjs` 是本项目**唯一能验证 WebSocket 服务端是否真的可用**的手段
+> （42 项断言：RFC 6455 握手、configure、best-move、错误路径、多客户端并发、
+> 断线重连）。它的客户端是 `tests\ws-client.mjs` —— 刻意自己实现，
+> 握手用 Node 内置 `crypto` 算 SHA-1，与服务端自写的 SHA-1 是**两套独立实现**，
+> 两边能握上手才说明都符合标准。若共用一份代码，就变成自己跟自己对。
+>
+> ⚠️ **不要用 `Start-Process` 起短命客户端进程手工验证服务端。** 连接会在
+> cmdlet 退出时被拆掉，`select` 自然报 0，看起来像服务端坏了 —— 实测被这个
+> 误导了很久。验证一律写成常驻测试脚本。
+
+> `parity.test.mjs` 与 `server.test.mjs` 都要先构建引擎
+> （前者调用 `ai2048-cli.exe trace` / `move` 取真值，后者要 `ai2048-server.exe`）。
 > 找不到可执行文件时**直接失败**，不静默跳过 —— 跳过等于没有验证。
 >
 > `renderer.test.mjs` / `input.test.mjs` 用 `tests\dom-stub.mjs`（一个极小的 DOM 桩）
@@ -324,6 +337,60 @@ node tests\degraded.test.mjs   # 降级路径：无 WebAudio、连不上引擎
   （残局 1240），而不是配置里写的 360。当 C++ 版分数低于 JS 版时，
   必须先排除「是不是把 bug 一起改了」这个解释。这类差异统一记进 `docs\baseline-notes.md`。
 - 基准结果留档在 `docs\results\`，跑批产物不进 `_tmp`（那是可复现性资产）。
+- **网络 I/O 的 socket 一律非阻塞 —— 包括监听 socket 和 accept 出来的连接。**
+  这是本项目已经**实际踩中两次**的故障，代价是服务端表面上"端口在监听、
+  进程活着、却对任何请求都不响应"，极难从现象反推：
+
+  1. `accept()`：`select` 报告监听 socket 可读，**只保证至少有一个**待接受连接，
+     不保证"取完最后一个后下一次 accept 会失败"。阻塞 socket 上不存在
+     "暂时没有连接"这个返回值，`for(;;)` 取空队列后第 N 次 `accept` 会**永久阻塞**，
+     整个单线程事件循环停摆。必须靠非阻塞下的 `WSAEWOULDBLOCK` / `EAGAIN` 来终止循环。
+  2. `recv()`：同理，`select` 说可读只保证"有数据"，不保证下一次读会返回 0 或出错。
+     `while (recv(...) > 0)` 在读完现有数据后会阻塞在第二次 `recv`。
+     客户端只发一个握手请求（不带跟帧）时**必然**触发。
+
+  排查方法记在案：日志插桩一度被 stdout/stderr 缓冲吞掉，看起来"什么都没发生"。
+  可靠的取证方式是**写文件 + 逐行夹逼**，而不是靠控制台输出。
+  另外 `Start-Process -NoNewWindow` 起短命客户端进程做手工验证会误导 ——
+  连接在 cmdlet 退出时就被拆掉，`select` 当然报 0，让人误判服务端坏了。
+  这类验证要写成**常驻的测试脚本**（`tests\server.test.mjs`），不要手敲一次性命令。
+- **禁止把已序列化的 JSON 字符串当值再塞进 JSON。** `Value(Serialize(x))` 会得到
+  `"debugInfo":"{\"aiType\":...}"` —— 双重序列化，C++ 侧完全看不出来，
+  前端 `JSON.parse` 后拿到的是字符串，所有 `debugInfo.xxx` 都是 `undefined`。
+  要嵌入已序列化的结构，必须**反解析成 `Value` 再 Set**（见 `protocol.cpp` 的 `EmbedJson`）。
+  协议层的新字段一律加一条集成断言，只靠 C++ 单测发现不了这类错误。
+
+## 依赖策略
+
+**本项目允许使用第三方依赖。** 全局 `AGENTS.md` 第 7 节的要求是
+「C++ 项目优先使用项目已有的构建系统与依赖管理方案」，并在新增前做一次评估 ——
+**不是禁止引入**。GoogleTest 从里程碑 1 起就是依赖（`FetchContent` 锁定 v1.17.0）。
+
+> ⚠️ **曾经有一次错误陈述**：里程碑 4 规划时我声称"项目不允许引入第三方依赖"，
+> 并据此打算把 JSON 解析也手写一遍。那是我把**前端零依赖**（用户为交互量小
+> 而做的产品选择）误当成了全局规则。这条记录保留下来，避免重犯。
+
+新增依赖前按全局规则逐条评估，并把结论写在这里：
+
+| 依赖 | 版本 | 锁定方式 | 为什么需要 | 评估结论 |
+|---|---|---|---|---|
+| GoogleTest | v1.17.0 | `FetchContent` + tag | 单元测试 | 需要联网获取；无等效内置方案 |
+| nlohmann/json | v3.12.0 | `FetchContent` + tag | 协议的 JSON 收发 | 单头、零依赖、MIT；手写 JSON 在转义/数字格式/嵌套上极易出错，不值得 |
+
+**为什么 WebSocket 服务端不引库**（这是刻意的例外，不是遗漏）：
+候选都不合适 —— IXWebSocket 要 zlib、Boost.Beast 要整套 Boost、
+websocketpp 要 Boost.Asio 且需构建、`pinwhell/wspp` 的 README 取回 404 无法核实。
+
+而本项目的协议只用 RFC 6455 的**极小子集**：文本帧、不分片、无扩展、
+payload 几十字节、无 TLS。服务端握手 + 分帧约 400 行，且**可以用 Node 的 `ws`
+客户端做真实互通测试**（不是自己跟自己测）。这比拉几百 MB 的 Boost 更划算。
+
+依赖相关的硬要求：
+
+- 版本必须**锁定到 tag**，不用分支、不用浮动版本
+- 引入前先查是否已有等效依赖，避免同一件事两个库
+- 项目专属依赖**不得装进 `D:\Codex Tools`**
+- 大依赖（Boost 这类）要先用分数或体积说明理由，不得默认引入
 - **命令行参数只用 ASCII。** Windows 的 `argv` 走的是 ANSI 代码页而不是 UTF-8，
   传中文会变成乱码。`bench --tag` 会被写进归档文件名，所以 CLI 直接拒绝非 ASCII 的 tag。
   中文说明写在 `docs\` 里，不用命令行传。
@@ -369,6 +436,13 @@ node tests\degraded.test.mjs   # 降级路径：无 WebAudio、连不上引擎
 | 8 | 是否需要暗色模式 | 影响配色体系设计，后补成本高 | 用户 |
 | 9 | `LICENSE` 类型 | 许可证确定前不创建空文件，不阻塞其他工作 | 用户 |
 | 10 | Android NDK 安装位置与版本 | 移动端的前置条件 | 用户 |
+
+### 已确认（2026-09-10）
+
+- **平台配比：Windows 70% / Android 30%。** 精力以 Windows 为主，Android 同步跟进。
+- **依赖安全策略放宽：** 不再因"第三方不确定是否安全"而一律排除成熟库。
+  允许参考 GitHub 上的源码，但**判断某个依赖是否安全这一关仍然要过**，
+  不能因为"现在允许了"就随手引入。引入前仍按「依赖策略」一节记录评估理由。
 
 ## 与参考实现（JS 原型）的关系
 

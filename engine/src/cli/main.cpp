@@ -24,6 +24,7 @@
 #include "ai2048/ai2048.h"
 #include "core/board.h"
 #include "core/game.h"
+#include "net/json.h"
 
 namespace {
 
@@ -742,6 +743,131 @@ int RunTrace(const Options& options) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// json：把 stdin 的每一行当作一个 JSON 解析，输出规范化结果
+//
+// 供与标准实现（Node 的 JSON.parse）**逐例对拍**。
+// 自己写的解析器只有跟一个独立实现比过才可信 —— 自己跟自己对只能证明稳定。
+// ---------------------------------------------------------------------------
+
+// 把字符串按 JSON 规则转义（含引号）。与 Node 的 JSON.stringify 对齐。
+[[nodiscard]] std::string EscapeJsonString(const std::string& text) {
+  std::string out = "\"";
+  for (const char raw : text) {
+    const auto ch = static_cast<unsigned char>(raw);
+    switch (ch) {
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\b':
+        out += "\\b";
+        break;
+      case '\f':
+        out += "\\f";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (ch < 0x20) {
+          char buffer[8];
+          std::snprintf(buffer, sizeof(buffer), "\\u%04x", ch);
+          out += buffer;
+        } else {
+          out += static_cast<char>(ch);
+        }
+        break;
+    }
+  }
+  out += '"';
+  return out;
+}
+
+int RunJsonCheck() {
+  // 规范化形式：对象键按升序、字符串转义、数字用 17 位有效数字。
+  // 这些规则与 Node 侧的生成脚本严格对应，否则对拍会因格式差异误报。
+  auto canonical = [](const ai2048::net::json::Value& value, auto&& self) -> std::string {
+    using ai2048::net::json::Type;
+    switch (value.type()) {
+      case Type::kNull:
+        return "null";
+      case Type::kBool:
+        return value.AsBool() ? "true" : "false";
+      case Type::kNumber: {
+        // 与 Node 侧严格对应的规范化：1 位整数部分 + 16 位小数 + 十进制指数，
+        // 去掉尾随零。这就是 %.16e 的格式。
+        // 必须先统一格式，否则会把 "1" 与 "1.0000000000000000" 这种
+        // **格式**差异误报成解析差异。
+        const double number = value.AsNumber();
+        if (!std::isfinite(number)) return "nonfinite";
+        if (number == 0.0 && std::signbit(number)) return "-0.0000000000000000e+0";
+
+        char buffer[64];
+        std::snprintf(buffer, sizeof(buffer), "%.16e", number);
+        std::string text(buffer);
+
+        const std::size_t epos = text.find('e');
+        std::string mantissa = text.substr(0, epos);
+        const int exponent = std::atoi(text.c_str() + epos + 1);
+
+        while (mantissa.size() > 2 && mantissa.back() == '0') mantissa.pop_back();
+        if (!mantissa.empty() && mantissa.back() == '.') mantissa.pop_back();
+
+        return mantissa + "e" + std::to_string(exponent);
+      }
+      case Type::kString:
+        return EscapeJsonString(value.AsString());
+      case Type::kArray: {
+        std::string out = "[";
+        const auto& array = value.AsArray();
+        for (std::size_t i = 0; i < array.size(); ++i) {
+          if (i != 0) out += ",";
+          out += self(array[i], self);
+        }
+        out += "]";
+        return out;
+      }
+      case Type::kObject: {
+        std::string out = "{";
+        bool first = true;
+        for (const auto& [key, member] : value.AsObject()) {  // std::map 已按 key 升序
+          if (!first) out += ",";
+          first = false;
+          out += EscapeJsonString(key);
+          out += ":";
+          out += self(member, self);
+        }
+        out += "}";
+        return out;
+      }
+    }
+    return "null";
+  };
+
+  std::string line;
+  while (std::getline(std::cin, line)) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+    if (line.empty()) continue;
+
+    const ai2048::net::json::ParseResult result = ai2048::net::json::Parse(line);
+    if (!result.ok) {
+      std::cout << "ERR\n";
+      continue;
+    }
+    std::cout << "OK " << canonical(result.value, canonical) << "\n";
+  }
+  return 0;
+}
+
 void PrintUsage() {
   std::cout
       << "ai2048-cli " << ai2048::VersionString() << " (ruleset " << ai2048::RulesetVersion()
@@ -788,6 +914,7 @@ int main(int argc, char** argv) {
   if (command == "play") return RunPlay(options);
   if (command == "move") return RunMove(options);
   if (command == "trace") return RunTrace(options);
+  if (command == "json") return RunJsonCheck();
   if (command == "selfcheck") return RunSelfCheck(options);
   if (command == "bench") return RunBench(options);
 

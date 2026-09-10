@@ -372,7 +372,16 @@ SearchResult SearchBestMove(std::uint64_t board, const SearchConfig& config,
   }
 
   if (legal_count == 0) {
-    return result;  // move 保持 nullopt：确实无步可走
+    // 确实无步可走：move 保持 nullopt。
+    //
+    // 但 evaluations 仍要填满 4 条（全部 legal=false）。协议契约里
+    // evaluatedMoves 是数组，前端拿它显示"AI 评估面板"；留空的话
+    // 前端只能靠 totalScore 全是 -inf 去猜，不如直接给出四个明确的方向。
+    for (const MoveEvaluation& candidate : candidates) {
+      result.evaluations.push_back(candidate);
+    }
+    result.stats = SearchStats{};
+    return result;
   }
 
   // 依次加深：先浅后深。这样即使超时，手里也有一个可用的结果 ——

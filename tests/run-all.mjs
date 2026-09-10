@@ -1,7 +1,10 @@
-// 跑完全部前端测试。
+// 跑完全部测试（前端 + 服务端端到端）。
 //
 // 顺序有讲究：先验规则（parity），再验渲染，最后验输入 ——
 // 规则错了，后面两层的通过就没有意义。
+// 服务端那套放最后，因为它会真的起进程，也最慢。
+//
+// 前置：engine\build 已构建（服务端测试需要 ai2048-server.exe）
 //
 // 运行（在项目根目录）：
 //   node tests\run-all.mjs
@@ -16,9 +19,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const SUITES = [
   ['规则一致性（与 C++ 引擎穷举对拍）', 'parity.test.mjs'],
+  ['JSON 解析器（与 JSON.parse 对拍）', 'json-parity.test.mjs'],
   ['渲染与动画（headless）', 'renderer.test.mjs'],
   ['输入与输入锁', 'input.test.mjs'],
   ['降级路径（无 WebAudio / 连不上引擎）', 'degraded.test.mjs'],
+  // 放最后：这一套会真的起 ai2048-server.exe 进程，
+  // 需要先构建好；它也是最慢的一套。
+  ['WebSocket 服务端（真实进程端到端）', 'server.test.mjs'],
 ];
 
 const results = [];
@@ -43,4 +50,4 @@ if (failed.length > 0) {
   console.error(`\n${failed.length} / ${results.length} 个测试套件失败`);
   process.exit(1);
 }
-console.log('\n全部前端测试通过');
+console.log('\n全部测试通过');

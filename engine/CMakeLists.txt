@@ -53,6 +53,11 @@ add_library(ai2048_core STATIC
   src/core/game.cpp
   src/core/rng.cpp
   src/core/version.cpp
+  # 握手用的纯计算：sha1.cpp 不碰网络、不开 socket，放在 core 里不违反
+  # "核心不得依赖网络"（那是给 src/net 的服务端说的）。
+  src/net/json.cpp
+  src/net/sha1.cpp
+  src/net/websocket.cpp
 )
 
 target_include_directories(ai2048_core
@@ -75,6 +80,33 @@ target_link_libraries(ai2048-cli PRIVATE ai2048_core)
 ai2048_apply_project_flags(ai2048-cli)
 
 # ---------------------------------------------------------------------------
+# 消费者①：WebSocket 服务（把引擎暴露给浏览器前端）
+#
+# 这是**消费者**，不是引擎的一部分 —— 引擎核心不依赖它。
+# 只有这里可以碰 socket、线程、文件系统。
+# ---------------------------------------------------------------------------
+add_executable(ai2048-server
+  src/net/protocol.cpp
+  src/net/server_main.cpp
+  src/net/socket_server.cpp
+)
+target_link_libraries(ai2048-server PRIVATE ai2048_core)
+
+# Windows 的 socket 在 ws2_32 里；POSIX 平台 socket 属于 libc，无需额外链接。
+# 注意 MinGW 不提供 <poll.h>，实现用的是 select()（见 socket_server.cpp）。
+if(WIN32)
+  target_link_libraries(ai2048-server PRIVATE ws2_32)
+endif()
+
+# MSVC 下需要定义 _WIN32_WINNT 才能拿到 inet_pton 等较新的 API；
+# MinGW 默认已足够新，不加也不影响。
+if(MSVC)
+  target_compile_definitions(ai2048-server PRIVATE _WIN32_WINNT=0x0601)
+endif()
+
+ai2048_apply_project_flags(ai2048-server)
+
+# ---------------------------------------------------------------------------
 # 测试
 # ---------------------------------------------------------------------------
 if(AI2048_BUILD_TESTS)
@@ -89,6 +121,7 @@ if(AI2048_BUILD_TESTS)
 
   add_executable(ai2048_tests
     tests/board_test.cpp
+    tests/net_test.cpp
   )
   target_link_libraries(ai2048_tests
     PRIVATE ai2048_core GTest::gtest_main)
