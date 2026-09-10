@@ -32,6 +32,64 @@ constexpr std::uint8_t kKindChance = 2;
   return x;
 }
 
+// ---------------------------------------------------------------------------
+// 8 重对称（旋转 + 镜像）
+//
+// 4x4 棋盘在 8 种旋转/镜像下**棋力完全等价** —— 从任意一个变换出发，
+// 最佳走子与期望值都只差一个同样的变换。所以置换表可以把这 8 个盘面
+// 当成同一个 key，命中率理论上提升 8 倍。
+//
+// 这一步对深搜特别重要：越往深处，同一盘面以不同朝向重复出现的概率越高。
+// ---------------------------------------------------------------------------
+
+// 反排 4 格行里的 nibble（等价于水平镜像）。
+[[nodiscard]] constexpr std::uint64_t ReverseCellsInRows(std::uint64_t x) noexcept {
+  x = ((x & 0x3333'3333'3333'3333ULL) << 2) | ((x & 0xCCCC'CCCC'CCCC'CCCCULL) >> 2);
+  x = ((x & 0x0F0F'0F0F'0F0F'0F0FULL) << 4) | ((x & 0xF0F0'F0F0'F0F0'F0F0ULL) >> 4);
+  return x;
+}
+
+// 交换相邻的两行（等价于交换上下的 2x2 块）。
+[[nodiscard]] constexpr std::uint64_t SwapRowPairs(std::uint64_t x) noexcept {
+  return ((x & 0x0000'FFFF'0000'FFFFULL) << 16) | ((x & 0xFFFF'0000'FFFF'0000ULL) >> 16);
+}
+
+// 交换相邻的两列（等价于交换左右的 2x2 块）。
+[[nodiscard]] constexpr std::uint64_t SwapColumnPairs(std::uint64_t x) noexcept {
+  return ((x & 0x00FF'00FF'00FF'00FFULL) << 8) | ((x & 0xFF00'FF00'FF00'FF00ULL) >> 8);
+}
+
+[[nodiscard]] std::uint64_t TransposeBoard(std::uint64_t b) noexcept {
+  std::uint64_t r = 0;
+  for (int row = 0; row < kBoardSize; ++row) {
+    for (int col = 0; col < kBoardSize; ++col) {
+      r = SetExponent(r, col * kBoardSize + row, GetExponent(b, row * kBoardSize + col));
+    }
+  }
+  return r;
+}
+
+// 8 个变换里的字典序最小者。它作为置换表的 key。
+[[nodiscard]] std::uint64_t CanonicalKey(std::uint64_t board) noexcept {
+  const std::uint64_t transposed = TransposeBoard(board);
+
+  std::uint64_t best = board;
+  const std::uint64_t candidates[8] = {
+      board,
+      ReverseCellsInRows(board),
+      SwapRowPairs(board),
+      ReverseCellsInRows(SwapRowPairs(board)),
+      transposed,
+      ReverseCellsInRows(transposed),
+      SwapRowPairs(transposed),
+      ReverseCellsInRows(SwapRowPairs(transposed)),
+  };
+  for (const std::uint64_t candidate : candidates) {
+    best = std::min(best, candidate);
+  }
+  return best;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -49,9 +107,12 @@ struct TranspositionTable::Impl {
 
   std::vector<Entry> entries;
   std::size_t mask = 0;
+  bool use_symmetry_keys = false;
 };
 
-TranspositionTable::TranspositionTable(std::size_t capacity) : impl_(new Impl()) {
+TranspositionTable::TranspositionTable(std::size_t capacity, bool use_symmetry_keys)
+    : impl_(new Impl()) {
+  impl_->use_symmetry_keys = use_symmetry_keys;
   if (capacity == 0) return;
   // 取 2 的幂，用位与代替取模
   std::size_t size = 1;
@@ -70,8 +131,9 @@ void TranspositionTable::Reset() noexcept {
 
 std::optional<float> TranspositionTable::Lookup(std::uint64_t board, int depth, std::uint8_t kind) {
   if (impl_->entries.empty()) return std::nullopt;
-  const Impl::Entry& entry = impl_->entries[MixHash(board, kind) & impl_->mask];
-  if (!entry.valid || entry.key != board || entry.kind != kind) return std::nullopt;
+  const std::uint64_t key = impl_->use_symmetry_keys ? CanonicalKey(board) : board;
+  const Impl::Entry& entry = impl_->entries[MixHash(key, kind) & impl_->mask];
+  if (!entry.valid || entry.key != key || entry.kind != kind) return std::nullopt;
   // 只接受"至少一样深"的结果。更浅的结果不能冒充更深的结果。
   if (entry.depth < static_cast<std::uint8_t>(depth)) return std::nullopt;
   return entry.value;
@@ -79,9 +141,10 @@ std::optional<float> TranspositionTable::Lookup(std::uint64_t board, int depth, 
 
 void TranspositionTable::Store(std::uint64_t board, int depth, std::uint8_t kind, float value) {
   if (impl_->entries.empty()) return;
-  Impl::Entry& entry = impl_->entries[MixHash(board, kind) & impl_->mask];
+  const std::uint64_t key = impl_->use_symmetry_keys ? CanonicalKey(board) : board;
+  Impl::Entry& entry = impl_->entries[MixHash(key, kind) & impl_->mask];
   // 简单替换：新结果总是写入。命中率靠容量保证。
-  entry.key = board;
+  entry.key = key;
   entry.value = value;
   entry.depth = static_cast<std::uint8_t>(std::min(depth, 255));
   entry.kind = kind;

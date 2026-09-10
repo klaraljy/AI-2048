@@ -33,7 +33,9 @@ class TranspositionTable {
  public:
   static constexpr std::size_t kDefaultCapacity = 1u << 20;
 
-  explicit TranspositionTable(std::size_t capacity = kDefaultCapacity);
+  // use_symmetry_keys 见 SearchConfig::use_symmetry_keys 的说明 —— 它有正确性代价。
+  explicit TranspositionTable(std::size_t capacity = kDefaultCapacity,
+                              bool use_symmetry_keys = false);
   ~TranspositionTable();
   TranspositionTable(const TranspositionTable&) = delete;
   TranspositionTable& operator=(const TranspositionTable&) = delete;
@@ -93,6 +95,16 @@ struct SearchConfig {
 
   // 时间预算（毫秒）。0 = 不限时。**超时也必须返回已完成搜索中的最佳合法步。**
   int time_budget_ms = 0;
+
+  // 置换表是否使用 8 重对称规范键。
+  //
+  // ⚠️ 这个开关有**正确性代价**，不是纯粹的性能优化：
+  // 评估函数是对称的（旋转/镜像后的盘面形状评分相同），但**搜索语义不是**
+  // —— 2048 里"哪一对先合并"取决于扫描方向（左移先合并靠左的，右移先合并靠右的），
+  // 所以旋转后的盘面最佳走子并不严格等价。用对称键会命中"看起来一样但语义不同"的条目。
+  //
+  // 实测节点数只降约 10%，收益远小于理论上的 8 倍，所以要谨慎使用。
+  bool use_symmetry_keys = false;
 
   Weights weights;
 

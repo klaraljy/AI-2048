@@ -47,7 +47,12 @@ struct Options {
   int time_budget_ms = 0;
   int chance_limit = 0;
   bool use_tt = true;
+  bool symmetry_keys = false;
+  ai2048::Weights weight_overrides;
 };
+
+// 解析 "key=value,key=value,..."。键用短名，便于命令行书写。
+[[nodiscard]] bool ParseWeightOverrides(const std::string& spec, ai2048::Weights* weights);
 
 [[nodiscard]] bool ParseOptions(int argc, char** argv, Options* options) {
   for (int i = 2; i < argc; ++i) {
@@ -94,10 +99,69 @@ struct Options {
       if (!take_int(&options->chance_limit)) return false;
     } else if (arg == "--no-tt") {
       options->use_tt = false;
+    } else if (arg == "--symmetry") {
+      options->symmetry_keys = true;
+    } else if (arg == "--weights") {
+      // 形如 empty=270,empty_late=700,mono=47,smooth=32,merge=18,corner=2200,snake=0.35,maxtile=12
+      // 用于自动调参：每次用一整套权重跑一批对局，比较分数。
+      std::string spec;
+      if (!take(&spec)) return false;
+      if (!ParseWeightOverrides(spec, &options->weight_overrides)) {
+        std::cerr << "无法解析 --weights: " << spec << "\n";
+        return false;
+      }
     } else if (arg == "--tag") {
       if (!take(&options->tag)) return false;
     } else {
       std::cerr << "未知选项: " << arg << "\n";
+      return false;
+    }
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// 权重覆盖（自动调参用）
+// ---------------------------------------------------------------------------
+
+// 解析 "key=value,key=value,..."。键用短名，便于命令行书写。
+[[nodiscard]] bool ParseWeightOverrides(const std::string& spec, ai2048::Weights* weights) {
+  std::size_t pos = 0;
+  while (pos < spec.size()) {
+    const std::size_t comma = spec.find(',', pos);
+    const std::string token =
+        spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+    pos = (comma == std::string::npos) ? spec.size() : comma + 1;
+    if (token.empty()) continue;
+
+    const std::size_t eq = token.find('=');
+    if (eq == std::string::npos) return false;
+    const std::string key = token.substr(0, eq);
+    float value = 0.0F;
+    try {
+      value = std::stof(token.substr(eq + 1));
+    } catch (...) {
+      return false;
+    }
+
+    if (key == "empty") {
+      weights->empty = value;
+    } else if (key == "empty_late") {
+      weights->empty_late = value;
+    } else if (key == "mono") {
+      weights->monotonicity = value;
+    } else if (key == "smooth") {
+      weights->smoothness = value;
+    } else if (key == "merge") {
+      weights->merge = value;
+    } else if (key == "corner") {
+      weights->corner = value;
+    } else if (key == "snake") {
+      weights->snake = value;
+    } else if (key == "maxtile") {
+      weights->max_tile = value;
+    } else {
+      std::cerr << "未知权重键: " << key << "\n";
       return false;
     }
   }
@@ -109,6 +173,7 @@ struct Options {
   config.base_depth = options.depth;
   config.time_budget_ms = options.time_budget_ms;
   config.chance_sample_limit = options.chance_limit;
+  config.weights = options.weight_overrides;
   return config;
 }
 
@@ -117,6 +182,10 @@ struct Options {
 // 而搜索本身只要 0.15 秒。详见 search.h 里 TranspositionTable 的说明。
 [[nodiscard]] std::size_t MakeTableCapacity(const Options& options) {
   return options.use_tt ? ai2048::TranspositionTable::kDefaultCapacity : 0;
+}
+
+[[nodiscard]] bool MakeUseSymmetryKeys(const Options& options) {
+  return options.use_tt && options.symmetry_keys;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,14 +249,14 @@ struct PlayOutcome {
 };
 
 [[nodiscard]] PlayOutcome PlayOneGame(std::uint64_t seed, const SearchConfig& config,
-                                      std::size_t table_capacity) {
+                                      std::size_t table_capacity, bool symmetry_keys) {
   const auto begin = std::chrono::steady_clock::now();
 
   Game game(seed);
   std::optional<Direction> last_move;
   // 每局一张表，局内跨步复用。表内容只由棋盘与深度决定，不依赖搜索历史，
   // 所以复用不影响结果 —— 但每局重新构造一份，保证同种子的两次运行完全一致。
-  ai2048::TranspositionTable table(table_capacity);
+  ai2048::TranspositionTable table(table_capacity, symmetry_keys);
 
   std::uint64_t nodes = 0;
   double search_ms = 0.0;
@@ -259,10 +328,11 @@ int RunSelfCheck(const Options& options) {
 
   const SearchConfig config = MakeSearchConfig(options);
   const std::size_t table_capacity = MakeTableCapacity(options);
+  const bool symmetry_keys = MakeUseSymmetryKeys(options);
   int failures = 0;
   for (const std::uint64_t seed : *seeds) {
-    const PlayOutcome first = PlayOneGame(seed, config, table_capacity);
-    const PlayOutcome second = PlayOneGame(seed, config, table_capacity);
+    const PlayOutcome first = PlayOneGame(seed, config, table_capacity, symmetry_keys);
+    const PlayOutcome second = PlayOneGame(seed, config, table_capacity, symmetry_keys);
     if (first.final_state != second.final_state) {
       ++failures;
       std::cerr << "  ✗ seed " << seed << " 两次运行结果不一致\n"
@@ -346,6 +416,7 @@ int RunBench(const Options& options) {
 
   const SearchConfig base_config = MakeSearchConfig(options);
   const std::size_t table_capacity = MakeTableCapacity(options);
+  const bool symmetry_keys = MakeUseSymmetryKeys(options);
   const auto started = std::chrono::steady_clock::now();
 
   auto worker = [&]() {
@@ -356,7 +427,7 @@ int RunBench(const Options& options) {
       // 每局用独立的配置副本（含独立的置换表），互不干扰。
       // 每局的结果只由 (*seeds)[index] 决定，与它跑在哪个线程无关 ——
       // 这是"并行不改变结果"的必要条件。
-      outcomes[index] = PlayOneGame((*seeds)[index], base_config, table_capacity);
+      outcomes[index] = PlayOneGame((*seeds)[index], base_config, table_capacity, symmetry_keys);
 
       const int done = completed.fetch_add(1) + 1;
       if (done % 50 == 0 || static_cast<std::size_t>(done) == seeds->size()) {
@@ -450,7 +521,7 @@ int RunPlay(const Options& options) {
   const SearchConfig config = MakeSearchConfig(options);
   Game game(options.seed);
   std::optional<Direction> last_move;
-  ai2048::TranspositionTable table(MakeTableCapacity(options));
+  ai2048::TranspositionTable table(MakeTableCapacity(options), MakeUseSymmetryKeys(options));
 
   std::cout << "seed=" << game.seed() << "  规则集=" << ai2048::RulesetVersion()
             << "  基础深度=" << options.depth;
@@ -497,6 +568,7 @@ void PrintUsage() {
             << "  --time N          每步时间预算（毫秒）。0 = 不限时（完全确定，可复现）\n"
             << "  --chance-limit N  chance 节点采样上限。0 = 枚举全部空格\n"
             << "  --no-tt           关闭置换表\n"
+            << "  --symmetry        置换表用 8 重对称键（有正确性代价，见 search.h）\n"
             << "子命令:\n"
             << "  version\n"
             << "  play      [--seed N] [--every N]              让 AI 跑一局并打印\n"
