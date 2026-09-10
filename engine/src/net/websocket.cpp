@@ -260,20 +260,47 @@ std::string BuildUpgradeResponse(std::string_view accept_key) {
   return out;
 }
 
-std::string BuildHttpError(int status, std::string_view reason) {
-  std::string body = std::to_string(status);
-  body += " ";
-  body += std::string(reason);
-  body += "\n";
-
+std::string BuildHttpResponse(int status, std::string_view reason, std::string_view content_type,
+                              std::string_view body) {
   std::string out;
   out += "HTTP/1.1 " + std::to_string(status) + " " + std::string(reason) + "\r\n";
-  out += "Content-Type: text/plain; charset=utf-8\r\n";
+  out += "Content-Type: " + std::string(content_type) + "\r\n";
+  // Content-Length 必须是**字节数**：说明页含中文，按字符数算会截断正文。
   out += "Content-Length: " + std::to_string(body.size()) + "\r\n";
   out += "Connection: close\r\n";
   out += "\r\n";
   out += body;
   return out;
+}
+
+std::string BuildHttpError(int status, std::string_view reason) {
+  std::string body = std::to_string(status);
+  body += " ";
+  body += std::string(reason);
+  body += "\n";
+  return BuildHttpResponse(status, reason, "text/plain; charset=utf-8", body);
+}
+
+bool HasUpgradeHeader(std::string_view raw_request) {
+  // 逐行找头名，不在整段文本里搜 "Upgrade" ——
+  // 否则请求行或正文里偶然出现这个词就会误判。
+  std::size_t pos = raw_request.find("\r\n");
+  if (pos == std::string_view::npos) return false;
+  pos += 2;
+
+  while (pos < raw_request.size()) {
+    const std::size_t line_end = raw_request.find("\r\n", pos);
+    if (line_end == std::string_view::npos) break;
+    if (line_end == pos) break;  // 空行 = 头结束
+
+    const std::string_view line = raw_request.substr(pos, line_end - pos);
+    const std::size_t colon = line.find(':');
+    if (colon != std::string_view::npos && IEquals(Trim(line.substr(0, colon)), "Upgrade")) {
+      return true;
+    }
+    pos = line_end + 2;
+  }
+  return false;
 }
 
 }  // namespace ai2048::net

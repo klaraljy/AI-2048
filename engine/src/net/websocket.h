@@ -102,6 +102,24 @@ struct UpgradeRequest {
 /** 生成一个简单的 HTTP 错误响应（握手失败时用）。 */
 [[nodiscard]] std::string BuildHttpError(int status, std::string_view reason);
 
+/**
+ * 生成 HTTP 响应（自定义 Content-Type 与正文）。
+ *
+ * 用于浏览器直接访问引擎端口时的说明页 —— 那个端口只说 WebSocket、
+ * 不提供网页。回一片空白或冷冰冰的 400，只会让人以为服务坏了。
+ */
+[[nodiscard]] std::string BuildHttpResponse(int status, std::string_view reason,
+                                            std::string_view content_type, std::string_view body);
+
+/**
+ * 请求里是否出现过 `Upgrade` 头（只看有没有，不校验取值）。
+ *
+ * 用来区分两种"握手失败"：
+ *   - 有这个头 → 对方确实在尝试 WebSocket 升级，失败要如实报错并记日志
+ *   - 没有这个头 → 多半是浏览器直接访问了引擎端口，该给说明页而不是报错
+ */
+[[nodiscard]] bool HasUpgradeHeader(std::string_view raw_request);
+
 }  // namespace ai2048::net
 
 #endif  // AI2048_NET_WEBSOCKET_H_

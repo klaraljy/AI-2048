@@ -124,6 +124,45 @@ const OPENING_BOARD = [
   [0, 0, 2, 2],
 ];
 
+/** 发一段原始 HTTP 请求，收回完整响应文本。 */
+function rawHttpRequest(port, requestText) {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: '127.0.0.1', port });
+    let received = '';
+    let settled = false;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(received);
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      reject(new Error(`原始 HTTP 请求超时，已收到 ${received.length} 字节`));
+    }, 3000);
+
+    socket.on('connect', () => socket.write(requestText));
+    socket.on('data', (chunk) => {
+      received += chunk.toString('utf8');
+      // 101 表示升级**成功**，服务端会保持连接不关 ——
+      // 这时不能等 close 事件，否则必然超时（踩过一次）。
+      if (received.startsWith('HTTP/1.1 101')) finish();
+    });
+    socket.on('close', finish);
+    socket.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
 /** 带默认校验的 best-move 请求。 */
 async function askMove(client, board, id, options) {
   const payload = { state: { board } };
@@ -338,7 +377,60 @@ async function main() {
     const secondMove = await askMove(second, OPENING_BOARD, 70);
     check('第二个客户端可独立请求', secondMove.type === 'result', JSON.stringify(secondMove).slice(0, 160));
 
-    console.log('\n[11] 关闭');
+    console.log('\n[13] 浏览器直接访问引擎端口');
+    // 用户很容易在浏览器里打开 http://127.0.0.1:8765/ 然后以为服务坏了。
+    // 服务端要回一个说明页，而不是 400 或一片空白。
+    const page = await fetch(`http://127.0.0.1:${port}/`).then((r) => ({
+      status: r.status,
+      type: r.headers.get('content-type') ?? '',
+      body: r.text(),
+    }));
+    const pageBody = await page.body;
+    check('普通 HTTP GET 返回 200 说明页', page.status === 200, `status=${page.status}`);
+    check(
+      '说明页是 HTML（浏览器能直接看到）',
+      page.type.includes('text/html'),
+      page.type
+    );
+    check(
+      '说明页里的引擎地址用的是**实际端口**而不是写死的 8765',
+      pageBody.includes(`ws://127.0.0.1:${port}`),
+      `端口 ${port}`
+    );
+    check(
+      '说明页告诉了用户怎么起前端',
+      pageBody.includes('npx serve'),
+      '缺少启动指引'
+    );
+
+    // 带 Upgrade 头但格式不对的，仍应如实报 400 —— 别把真错误也变成说明页。
+    // 用原始 socket 而不是 fetch：这是 `Connection: Upgrade` + 立即关连接
+    // 的组合，undici 会直接报 "fetch failed"，看不到真实响应。
+    const badUpgrade = await rawHttpRequest(
+      port,
+      `GET / HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+        `Upgrade: h2c\r\nConnection: Upgrade\r\n\r\n`
+    );
+    check(
+      '带 Upgrade 头但非 websocket → 仍是 400（不被说明页掩盖）',
+      badUpgrade.startsWith('HTTP/1.1 400'),
+      badUpgrade.split('\r\n')[0]
+    );
+
+    // 大小写不敏感：HTTP 头名本来就不区分大小写
+    const mixedCase = await rawHttpRequest(
+      port,
+      `GET / HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+        `uPgRaDe: websocket\r\nConnection: Upgrade\r\n` +
+        `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`
+    );
+    check(
+      '头名大小写混写仍能识别为升级请求（得到 101）',
+      mixedCase.startsWith('HTTP/1.1 101'),
+      mixedCase.split('\r\n')[0]
+    );
+
+    console.log('\n[14] 关闭');
     second.close();
     await new Promise((resolve) => setTimeout(resolve, 200));
     const afterPeerClose = await client.request({ id: 80, type: 'ping' });

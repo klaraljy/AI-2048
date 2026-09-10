@@ -190,6 +190,51 @@ void ApplyConfig(const Value& config, ai2048::SearchConfig* target) {
   return json::Serialize(info);
 }
 
+/**
+ * 浏览器直接访问引擎端口时返回的说明页。
+ *
+ * 端口号从**实际监听端口**生成，不写死 8765 —— 用户可以改 --port，
+ * 写死的话说明页会把人指到错误的地址上。
+ */
+[[nodiscard]] std::string BuildInfoPage(std::uint16_t port) {
+  const std::string engine_url = "ws://127.0.0.1:" + std::to_string(port);
+
+  std::string body;
+  body += "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">";
+  body += "<title>AI-2048 引擎</title><style>";
+  body +=
+      "body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;max-width:44em;"
+      "margin:3em auto;padding:0 1.5em;line-height:1.7;color:#1f2933}";
+  body +=
+      "h1{font-size:1.5em}code{background:#eef2f7;padding:.15em .45em;border-radius:4px;"
+      "font-size:.95em}pre{background:#1f2933;color:#e8eef5;padding:1em;border-radius:8px;"
+      "overflow-x:auto}";
+  body +=
+      ".warn{background:#fff4e5;border-left:4px solid #f0a020;padding:.8em 1em;"
+      "border-radius:4px;margin:1.2em 0}";
+  body += "</style></head><body>";
+  body += "<h1>这是 AI-2048 的<strong>引擎端口</strong>，不是游戏页面</h1>";
+  body += "<p>它只说 WebSocket，用来给前端提供 AI 走子决策，不会返回网页。</p>";
+  body += "<p>你看到这个页面，通常是因为在浏览器里直接打开了这个地址。</p>";
+
+  body += "<h2>怎么玩</h2>";
+  body += "<p>另开一个终端，进入项目的 <code>web</code> 目录起一个静态服务器：</p>";
+  body += "<pre>npx serve web</pre>";
+  body += "<p>然后打开它给出的地址（形如 <code>http://localhost:3000</code>）即可。</p>";
+  body += "<p>游戏页会自动连到这个引擎：<code>" + engine_url + "</code></p>";
+
+  body +=
+      "<div class=\"warn\">连不上引擎也能玩 —— 前端会退回内置的弱 AI，"
+      "并在页面上明确提示。所以游戏页打开了却觉得 AI 很弱，多半就是没连上这里。</div>";
+
+  body += "<h2>为什么不用 file:// 直接打开网页</h2>";
+  body +=
+      "<p>前端的 ES module 在 <code>file://</code> 下会被浏览器拦住，"
+      "必须经由 HTTP 提供。</p>";
+  body += "</body></html>";
+  return body;
+}
+
 }  // namespace
 
 ProtocolHandler::ProtocolHandler(SocketServer* server, std::string* /*log_prefix*/)
@@ -233,7 +278,22 @@ bool ProtocolHandler::HandleHandshake(ConnectionId id, Session* session) {
   const UpgradeRequest request = ParseUpgradeRequest(head);
 
   if (!request.valid) {
+    // 区分两种"失败"：
+    //
+    //   1. 对方带了 Upgrade 头 → 确实在尝试 WebSocket，失败要如实报错。
+    //   2. 完全没带 Upgrade 头 → 多半是浏览器/工具直接访问了引擎端口。
+    //      这不算错误，回一个说明页告诉人该怎么做，比冷冰冰的 400 有用得多
+    //      （400 只在终端可见，浏览器里是一片空白，只会让人以为服务坏了）。
+    if (!HasUpgradeHeader(head)) {
+      std::cout << "  收到普通 HTTP 请求（非 WebSocket），已返回说明页\n";
+      static_cast<void>(server_->Send(id, BuildHttpResponse(200, "OK", "text/html; charset=utf-8",
+                                                            BuildInfoPage(server_->port()))));
+      return false;
+    }
+
     std::cout << "  握手失败：" << request.error << "\n";
+    std::cout << "    请求行: " << head.substr(0, head.find("\r\n")) << "\n";
+    std::cout.flush();
     static_cast<void>(server_->Send(id, BuildHttpError(400, "Bad Request")));
     return false;
   }
