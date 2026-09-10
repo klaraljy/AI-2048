@@ -15,6 +15,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -30,19 +31,29 @@ namespace {
 
 #ifdef _WIN32
 
-/** 退出时把控制台输出代码页恢复原值。 */
-class ConsoleCodepageGuard {
- public:
-  ConsoleCodepageGuard() : original_(GetConsoleOutputCP()) {}
-  ~ConsoleCodepageGuard() { SetConsoleOutputCP(original_); }
-  ConsoleCodepageGuard(const ConsoleCodepageGuard&) = delete;
-  ConsoleCodepageGuard& operator=(const ConsoleCodepageGuard&) = delete;
-
-  [[nodiscard]] UINT original() const noexcept { return original_; }
-
- private:
-  UINT original_;
+/**
+ * 进程退出时把控制台输出代码页恢复原值。
+ *
+ * 关键：**必须在 main 之前就构造**，这样记下的才是真正的初始值。
+ *
+ * 踩过的坑：最初每条 TEST 各自保存一次原值 —— 那是错的。第二条记到的
+ * "原值"其实是第一条留下的 65001，析构顺序又与之相反，会把控制台永久
+ * 留在 65001 上。改用命名空间作用域的静态对象后，构造发生在静态初始化
+ * 阶段（早于 main 与任何测试），析构在退出时恢复。
+ *
+ * 备注：判断"是否恢复成功"不能靠 `chcp` 去看 —— 它是个子进程，
+ * 反映的是另一份状态，容易得出错误结论（这一点实际误导过一次排查）。
+ * 要看就在**同一进程内**调 GetConsoleOutputCP()。
+ */
+struct ConsoleCodepageGuard {
+  UINT original = GetConsoleOutputCP();
+  ~ConsoleCodepageGuard() { SetConsoleOutputCP(original); }
 };
+
+const ConsoleCodepageGuard kConsoleCodepageGuard;
+
+/** 把控制台设成 936，复现简中系统双击运行时的状态。 */
+void ForceLegacyCodepageForTest() { ASSERT_NE(SetConsoleOutputCP(936), 0); }
 
 /**
  * 定位 engine\build\ai2048-server.exe。
@@ -101,10 +112,8 @@ TEST(ConsoleCodepage, ServerSwitchesConsoleToUtf8) {
   ASSERT_TRUE(GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES)
       << "找不到 " << std::string(exe.begin(), exe.end()) << "，请先构建 engine\\build";
 
-  const ConsoleCodepageGuard guard;
-
   // 复现双击状态：简中系统控制台默认就是 936。
-  ASSERT_NE(SetConsoleOutputCP(936), 0) << "无法把控制台代码页设为 936";
+  ForceLegacyCodepageForTest();
 
   // 用一个不冲突的端口，避免与开发者本地开着的服务端撞车。
   ASSERT_TRUE(RunServerBriefly(exe, L"--port 15399"));
@@ -121,8 +130,7 @@ TEST(ConsoleCodepage, CliSwitchesConsoleToUtf8) {
   ASSERT_TRUE(GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES)
       << "找不到 ai2048-cli.exe，请先构建 engine\\build";
 
-  const ConsoleCodepageGuard guard;
-  ASSERT_NE(SetConsoleOutputCP(936), 0);
+  ForceLegacyCodepageForTest();
 
   ASSERT_TRUE(RunServerBriefly(exe, L"version"));
 
