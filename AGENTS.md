@@ -174,6 +174,27 @@ AVX2 可以放心用。
 
 ## 安装与启动
 
+### 推荐：双击 `start-ai2048.bat`
+
+一键起引擎 + 前端 + 自动开浏览器，**不需要联网装任何东西**。
+
+```
+start-ai2048.bat          双击即可
+```
+
+它按顺序做三件事：清掉残留的旧引擎 → 启动引擎（输出直接显示在本窗口）
+→ 启动静态服务器、等引擎就绪、开浏览器。**关掉窗口 = 全部停止。**
+
+真正的逻辑在 `tools\launch.mjs`，批处理只是入口。这样分工的原因：
+**cmd 被强制结束（用户直接叉掉窗口）时，批处理后面的收尾语句根本不会执行**，
+引擎会留在后台、下次启动还撞端口（实测确认）。Node 的 `exit` / `SIGINT`
+处理可靠得多。批处理只负责切代码页、检查 node、别让窗口闪退。
+
+端口可用环境变量覆盖：`AI2048_PORT`（前端，默认 3000）、
+`AI2048_ENGINE_PORT`（引擎，默认 8765）。
+
+### 手动启动（排查问题时用）
+
 ```sh
 # 一次性：让 CMake 与 clang-format 可用（当前不在 PATH）
 $env:PATH = "D:\Codex Tools\CMake\cmake-3.31.6-windows-x86_64\bin;D:\Codex Tools\clang-format18\clang_format\data\bin;$env:PATH"
@@ -188,18 +209,30 @@ engine\build\ai2048-cli.exe selfcheck --seeds benchmarks\seeds-v1.txt
 # 跑批
 engine\build\ai2048-cli.exe bench --seeds benchmarks\seeds-v1.txt --out docs\results\
 
-# 起服务（默认 127.0.0.1:8765，默认深度 8）
+# 引擎（默认 127.0.0.1:8765，默认深度 8）
 engine\build\ai2048-server.exe
-engine\build\ai2048-server.exe --port 8765 --depth 8
 
-# 前端：ES module 在 file:// 下会被拦，必须走 HTTP。另开一个终端：
-npx serve web
-# 浏览器打开它给出的地址即可
+# 前端：零依赖静态服务器，另开一个终端
+node tools\static-server.mjs --engine ws://127.0.0.1:8765 --open
+# 或者加 --open，它会等引擎就绪后自动开浏览器
 ```
 
-> **双击也能跑** `ai2048-server.exe`：用默认端口与深度直接启动。
->
+> **不要用 `npx serve web`**：那个包要联网下载，首次运行会卡在
+> `Ok to proceed? (y)` 上。`tools\static-server.mjs` 用 Node 内置模块实现，
+> 零依赖，并且**自己处理 MIME** —— `.js` 必须是 `text/javascript`，
+> 类型错了浏览器的 module 加载器会直接拒绝，页面白屏而服务器日志毫无异常。
+
 > ⚠️ 服务端**没有任何鉴权**，默认只监听回环地址。把它改到外部地址等于把 CPU 交出去。
+
+### 批处理文件的两个硬要求（都实测踩过）
+
+`start-ai2048.bat` 必须保存为 **UTF-8 无 BOM + CRLF**：
+
+1. **无 BOM，且开头 `chcp 65001`** → 中文正常。写成 GBK 反而乱码。
+2. **必须是 CRLF。** 用 LF 时 `cmd` 会把命令从中间劈开，报出
+   `'rlevel' is not recognized as an internal or external command`
+   这种莫名其妙的错（`if errorlevel` 被截断了）—— 与内容毫无关系的报错，
+   极难从现象反推。
 
 ### 引擎端口不是游戏页面
 
@@ -207,8 +240,11 @@ npx serve web
 **不返回网页**。在浏览器里直接打开 `http://127.0.0.1:8765/` 是打不开游戏的。
 
 为了不让这变成"服务是不是坏了"的困惑，服务端对**没带 `Upgrade` 头**的
-普通 HTTP 请求返回一个 HTML 说明页（含实际端口与启动前端的命令），
+普通 HTTP 请求返回一个 HTML 说明页（含实际端口与启动方式），
 而不是 400 —— 400 只在终端可见，浏览器里是一片空白。
+
+说明页会直接告诉用户**双击 `start-ai2048.bat`**，而不需要他去理解
+"静态服务器"是什么。
 
 - 说明页里的引擎地址**从实际监听端口生成**，不写死 8765（用户可改 `--port`）。
 - 带 `Upgrade` 头但取值不对的，**仍然如实报 400 并记日志** ——
@@ -298,36 +334,44 @@ ctest --test-dir engine\build-tests --output-on-failure
 ### 工作流 B：前端
 
 ```sh
-# ES module 在 file:// 下会被拦，必须走 HTTP。任选一个静态服务器
-npx serve web
-# 或者用引擎自带的 server（里程碑 4 之后）
-engine\build\ai2048-server.exe --port 8765
+# ES module 在 file:// 下会被拦，必须走 HTTP。
+# 正常玩法直接双击 start-ai2048.bat；手动起则是：
+node tools\static-server.mjs --engine ws://127.0.0.1:8765 --open
 ```
 
 **测试**（Node 直跑，零依赖，不需要浏览器）：
 
 ```sh
-node tests\run-all.mjs         # 一次跑完全部六套（推荐）
-node tests\parity.test.mjs     # 规则一致性：与 C++ 引擎穷举对拍（262144 条 + 30 局）
+node tests\run-all.mjs          # 一次跑完全部七套（推荐）
+node tests\parity.test.mjs      # 规则一致性：与 C++ 引擎穷举对拍（262144 条 + 30 局）
 node tests\json-parity.test.mjs # 自写 JSON 解析器：与 JSON.parse 对拍
-node tests\renderer.test.mjs   # 渲染/动画：headless 跑真实 renderer
-node tests\input.test.mjs      # 输入：键位、滑动、输入锁
-node tests\degraded.test.mjs   # 降级路径：无 WebAudio、连不上引擎
-node tests\server.test.mjs     # 服务端端到端：真起 ai2048-server.exe 进程
+node tests\renderer.test.mjs    # 渲染/动画：headless 跑真实 renderer
+node tests\input.test.mjs       # 输入：键位、滑动、输入锁
+node tests\degraded.test.mjs    # 降级路径：无 WebAudio、连不上引擎
+node tests\server.test.mjs      # 服务端端到端：真起 ai2048-server.exe 进程
+node tests\launcher.test.mjs    # 双击启动链路：静态服务器 + 引擎 + 前端连得上
 ```
 
+> `launcher.test.mjs` 覆盖"双击之后能不能真的玩"这条链路，因为启动器是
+> 默认入口、坏了代价最大：静态服务器起没起、`index.html` 与 `.js` 的 MIME
+> 对不对（类型错会白屏而日志无异常）、启动器 URL 里的 `?engine=` 能不能被
+> 前端正确解析回原值、用解析出的地址能否完成 WebSocket 握手并拿到走子决策、
+> 目录穿越是否被挡住。**它不启动真实浏览器** —— 那没法自动化，
+> 视觉与手感仍须人工验收。
+
 > `server.test.mjs` 是本项目**唯一能验证 WebSocket 服务端是否真的可用**的手段
-> （42 项断言：RFC 6455 握手、configure、best-move、错误路径、多客户端并发、
-> 断线重连）。它的客户端是 `tests\ws-client.mjs` —— 刻意自己实现，
-> 握手用 Node 内置 `crypto` 算 SHA-1，与服务端自写的 SHA-1 是**两套独立实现**，
-> 两边能握上手才说明都符合标准。若共用一份代码，就变成自己跟自己对。
+> （49 项断言：RFC 6455 握手、configure、best-move、错误路径、多客户端并发、
+> 断线重连、浏览器直连引擎端口时的说明页）。它的客户端是 `tests\ws-client.mjs`
+> —— 刻意自己实现，握手用 Node 内置 `crypto` 算 SHA-1，与服务端自写的 SHA-1
+> 是**两套独立实现**，两边能握上手才说明都符合标准。若共用一份代码，
+> 就变成自己跟自己对。
 >
 > ⚠️ **不要用 `Start-Process` 起短命客户端进程手工验证服务端。** 连接会在
 > cmdlet 退出时被拆掉，`select` 自然报 0，看起来像服务端坏了 —— 实测被这个
 > 误导了很久。验证一律写成常驻测试脚本。
 
-> `parity.test.mjs` 与 `server.test.mjs` 都要先构建引擎
-> （前者调用 `ai2048-cli.exe trace` / `move` 取真值，后者要 `ai2048-server.exe`）。
+> `parity.test.mjs`、`server.test.mjs`、`launcher.test.mjs` 都要先构建引擎
+> （前者调用 `ai2048-cli.exe trace` / `move` 取真值，后两者要 `ai2048-server.exe`）。
 > 找不到可执行文件时**直接失败**，不静默跳过 —— 跳过等于没有验证。
 >
 > `renderer.test.mjs` / `input.test.mjs` 用 `tests\dom-stub.mjs`（一个极小的 DOM 桩）

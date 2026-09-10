@@ -23,9 +23,10 @@ const SUITES = [
   ['渲染与动画（headless）', 'renderer.test.mjs'],
   ['输入与输入锁', 'input.test.mjs'],
   ['降级路径（无 WebAudio / 连不上引擎）', 'degraded.test.mjs'],
-  // 放最后：这一套会真的起 ai2048-server.exe 进程，
-  // 需要先构建好；它也是最慢的一套。
+  // 放最后：这两套会真的起引擎进程（server 还会起静态服务器），
+  // 需要先构建好；也是最慢的两套。
   ['WebSocket 服务端（真实进程端到端）', 'server.test.mjs'],
+  ['双击启动链路（静态服务器 + 引擎 + 前端连得上）', 'launcher.test.mjs'],
 ];
 
 const results = [];

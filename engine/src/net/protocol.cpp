@@ -218,10 +218,13 @@ void ApplyConfig(const Value& config, ai2048::SearchConfig* target) {
   body += "<p>你看到这个页面，通常是因为在浏览器里直接打开了这个地址。</p>";
 
   body += "<h2>怎么玩</h2>";
-  body += "<p>另开一个终端，进入项目的 <code>web</code> 目录起一个静态服务器：</p>";
-  body += "<pre>npx serve web</pre>";
-  body += "<p>然后打开它给出的地址（形如 <code>http://localhost:3000</code>）即可。</p>";
-  body += "<p>游戏页会自动连到这个引擎：<code>" + engine_url + "</code></p>";
+  body +=
+      "<p>回到项目目录，<strong>双击 <code>start-ai2048.bat</code></strong> —— "
+      "它会自动起引擎和前端，并打开正确的页面。</p>";
+  body += "<p>手动启动的话，另开一个终端：</p>";
+  body += "<pre>node tools\\static-server.mjs --engine " + engine_url + " --open</pre>";
+  body += "<p>然后打开它给出的地址（形如 <code>http://127.0.0.1:3000</code>）即可。</p>";
+  body += "<p>本引擎的地址是：<code>" + engine_url + "</code></p>";
 
   body +=
       "<div class=\"warn\">连不上引擎也能玩 —— 前端会退回内置的弱 AI，"

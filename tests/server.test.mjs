@@ -398,9 +398,14 @@ async function main() {
       `端口 ${port}`
     );
     check(
-      '说明页告诉了用户怎么起前端',
-      pageBody.includes('npx serve'),
-      '缺少启动指引'
+      '说明页指向一键启动器（用户不必理解"静态服务器"是什么）',
+      pageBody.includes('start-ai2048.bat'),
+      '缺少 start-ai2048.bat'
+    );
+    check(
+      '说明页也给了手动启动命令（排查时用）',
+      pageBody.includes('static-server.mjs'),
+      '缺少 static-server.mjs'
     );
 
     // 带 Upgrade 头但格式不对的，仍应如实报 400 —— 别把真错误也变成说明页。
