@@ -215,10 +215,16 @@ clang-format --dry-run --Werror --style=file $cf
 
 ### 工作流 A：C++ 引擎
 
-> 以下命令**全部已实测通过**（脚手架阶段）：`clang-format` exit 0、
-> `cmake` 配置与构建 exit 0、`ctest` **2/2 通过**、
-> `ai2048-cli version` 输出 `ai2048 0.0.1 (ruleset 1)`。
-> `selfcheck` / `bench` 目前返回退出码 2 并提示未实现。
+> **里程碑 1 已完成，以下命令全部实测通过：**
+> `clang-format` exit 0；Release 与 Debug 构建均**无警告**；
+> `ctest` **43/43 通过**；`selfcheck` 在 100 局与 1000 局上均逐字节一致；
+> `bench` 1000 局耗时 0.05 s（12 线程）。
+>
+> 规则正确性的主要依据不是手写期望值，而是与 **Gabriele Cirulli 原始实现**
+> （`game_manager.js`）在**全部 65536 种单行状态**上逐行对拍 —— 见
+> `BoardRowExhaustive.MatchesAuthoritativeReferenceOnAllRows`。
+> 开发中它抓出了三个真实缺陷：得分打包静默截断、右移少一次反排、
+> 以及 `SlideRow` 未先压实就合并。
 
 ```powershell
 $cf = (Get-ChildItem engine\src, engine\tests, engine\include -Recurse -Include *.cpp,*.h).FullName
@@ -297,6 +303,11 @@ engine\build\ai2048-server.exe --port 8765
   （残局 1240），而不是配置里写的 360。当 C++ 版分数低于 JS 版时，
   必须先排除「是不是把 bug 一起改了」这个解释。这类差异统一记进 `docs\baseline-notes.md`。
 - 基准结果留档在 `docs\results\`，跑批产物不进 `_tmp`（那是可复现性资产）。
+- **命令行参数只用 ASCII。** Windows 的 `argv` 走的是 ANSI 代码页而不是 UTF-8，
+  传中文会变成乱码。`bench --tag` 会被写进归档文件名，所以 CLI 直接拒绝非 ASCII 的 tag。
+  中文说明写在 `docs\` 里，不用命令行传。
+  项目自身输出的中文（`std::cout`）不受影响 —— 那是 UTF-8 字节流，
+  只是 PowerShell 控制台按 GBK 解码才显示成乱码。
 
 ## AI 算法
 

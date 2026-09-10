@@ -47,12 +47,17 @@ endfunction()
 # 详见 AGENTS.md「移动端」一节。
 # ---------------------------------------------------------------------------
 add_library(ai2048_core STATIC
+  src/core/board.cpp
+  src/core/game.cpp
+  src/core/rng.cpp
   src/core/version.cpp
 )
 
 target_include_directories(ai2048_core
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  # INTERNAL：消费者（CLI / 服务 / 测试）需要 core/*.h 这类内部头，
+  # 但用 PUBLIC 会把这些路径传染给消费者的下游；INTERNAL 正是这个语义。
+  INTERNAL ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # 版本字符串从 project(VERSION ...) 注入，避免两处各写一份而漂移。
 target_compile_definitions(ai2048_core
@@ -81,7 +86,7 @@ if(AI2048_BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
 
   add_executable(ai2048_tests
-    tests/version_test.cpp
+    tests/board_test.cpp
   )
   target_link_libraries(ai2048_tests
     PRIVATE ai2048_core GTest::gtest_main)
