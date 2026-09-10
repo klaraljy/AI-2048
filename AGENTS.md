@@ -265,10 +265,11 @@ engine\build\ai2048-server.exe --port 8765
 **前端自动化测试**（Node 直跑，零依赖，不需要浏览器）：
 
 ```sh
-node tests\run-all.mjs         # 一次跑完下面三个（推荐）
+node tests\run-all.mjs         # 一次跑完下面四个（推荐）
 node tests\parity.test.mjs     # 规则一致性：与 C++ 引擎穷举对拍（262144 条 + 30 局）
 node tests\renderer.test.mjs   # 渲染/动画：headless 跑真实 renderer
 node tests\input.test.mjs      # 输入：键位、滑动、输入锁
+node tests\degraded.test.mjs   # 降级路径：无 WebAudio、连不上引擎
 ```
 
 > `parity.test.mjs` 要先构建引擎（它调用 `ai2048-cli.exe trace` / `move` 取真值）。

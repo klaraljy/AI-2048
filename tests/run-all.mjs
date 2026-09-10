@@ -18,6 +18,7 @@ const SUITES = [
   ['规则一致性（与 C++ 引擎穷举对拍）', 'parity.test.mjs'],
   ['渲染与动画（headless）', 'renderer.test.mjs'],
   ['输入与输入锁', 'input.test.mjs'],
+  ['降级路径（无 WebAudio / 连不上引擎）', 'degraded.test.mjs'],
 ];
 
 const results = [];
