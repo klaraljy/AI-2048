@@ -40,49 +40,56 @@ inline constexpr std::array<int, 4> kCornerIndices = {0, 3, 12, 15};
 }
 
 /**
- * 收集与**最大方块相邻**（上下左右 4 格）的空格下标。
+ * 收集"与**当前有空位的最大方块**相邻"的空格下标。
  *
- * 多个最大方块时取**第一个**（行优先）：规则必须确定，否则同种子不可复现。
- * 顺序按"遍历最大块的四个邻居"给出（上、下、左、右），固定不变。
+ * 规则按用户明确指示演进：原先只找**最大块**，它旁边没空位时偏置就直接关闭。
+ * 但那样在残局几乎失效 —— 最大块往往被围死，而盘面上还有其它大块旁边有空位，
+ * 那正是最该放新块的地方。
+ *
+ * 现在改为：**按等级从高到低**找第一个"四周有空位"的方块，在它的相邻空格里选。
+ * 例如 2048 被围死、但 128 旁边有空，就放在 128 旁边。
+ *
+ * 多个同值方块时取**行优先第一个**（规则必须确定，否则同种子不可复现）。
+ * 邻居顺序固定为「上、下、左、右」—— 它决定"取第 k 个"的结果。
  */
-[[nodiscard]] std::array<int, kCellCount> CollectEmptyNextToMax(std::uint64_t board,
-                                                                int* count) noexcept {
+[[nodiscard]] std::array<int, kCellCount> CollectEmptyNextToLargestMovable(
+    std::uint64_t board, int* count) noexcept {
   std::array<int, kCellCount> cells{};
-  int n = 0;
+  *count = 0;
 
-  const int max_exponent = MaxExponent(board);
-  if (max_exponent <= 0) {
-    *count = 0;
-    return cells;
-  }
-
-  int max_row = -1;
-  int max_col = -1;
-  for (int index = 0; index < kCellCount && max_row < 0; ++index) {
-    if (GetExponent(board, index) == max_exponent) {
-      max_row = index / kBoardSize;
-      max_col = index % kBoardSize;
-    }
-  }
-  if (max_row < 0) {
-    *count = 0;
-    return cells;
-  }
-
-  // 上、下、左、右。顺序固定 —— 它决定"取第 k 个"的结果。
   constexpr std::array<std::array<int, 2>, 4> kOffsets = {{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
-  for (const auto& offset : kOffsets) {
-    const int r = max_row + offset[0];
-    const int c = max_col + offset[1];
-    if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
-    const int index = r * kBoardSize + c;
-    if (GetExponent(board, index) == 0) {
-      cells[static_cast<std::size_t>(n)] = index;
-      ++n;
+
+  // 棋盘最多 16 格，等级最多 kMaxExponent，直接逐级扫描即可，不需要额外数据结构。
+  for (int exponent = MaxExponent(board); exponent >= 1; --exponent) {
+    int row = -1;
+    int col = -1;
+    for (int index = 0; index < kCellCount; ++index) {
+      if (GetExponent(board, index) == exponent) {
+        row = index / kBoardSize;
+        col = index % kBoardSize;
+        break;  // 行优先第一个
+      }
     }
+    if (row < 0) continue;  // 盘面上没有这个等级
+
+    int n = 0;
+    for (const auto& offset : kOffsets) {
+      const int r = row + offset[0];
+      const int c = col + offset[1];
+      if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
+      const int index = r * kBoardSize + c;
+      if (GetExponent(board, index) == 0) {
+        cells[static_cast<std::size_t>(n)] = index;
+        ++n;
+      }
+    }
+    if (n > 0) {
+      *count = n;  // 这个等级旁边有空位 —— 就是它
+      return cells;
+    }
+    // 否则继续往下一个等级找
   }
 
-  *count = n;
   return cells;
 }
 
@@ -138,7 +145,8 @@ SpawnRecord Game::SpawnRandomTile() noexcept {
     }
   } else if (difficulty_ == Difficulty::kHard) {
     int near_count = 0;
-    const std::array<int, kCellCount> near_cells = CollectEmptyNextToMax(board_, &near_count);
+    const std::array<int, kCellCount> near_cells =
+        CollectEmptyNextToLargestMovable(board_, &near_count);
     if (near_count > 0 && rng_.Chance(kHardNearMaxNumerator, kDifficultyDenominator)) {
       const int slot = static_cast<int>(rng_.NextBounded(static_cast<std::uint64_t>(near_count)));
       index = near_cells[static_cast<std::size_t>(slot)];

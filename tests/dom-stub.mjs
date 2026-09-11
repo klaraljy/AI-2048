@@ -60,6 +60,14 @@ class FakeElement {
     // renderer 会读 clientWidth 计算格子尺寸
     this.clientWidth = 460;
     this.offsetWidth = 460;
+    // renderer 用 dataset 标记方块的值与位数（CSS 按 data-value 上色）
+    this.dataset = {};
+    // getBoundingClientRect：庆祝烟花模块用它拿画布尺寸
+    this._rect = { width: 460, height: 460, top: 0, left: 0 };
+  }
+
+  getBoundingClientRect() {
+    return this._rect;
   }
 
   get className() {

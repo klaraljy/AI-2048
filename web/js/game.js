@@ -322,7 +322,7 @@ export class Game {
         return corners[this._rng.nextBounded(corners.length)];
       }
     } else if (this.difficulty === DIFFICULTY_HARD) {
-      const nearMax = this._emptyCellsNextToMax(empties);
+      const nearMax = this._emptyCellsNextToLargestMovable(empties);
       if (nearMax.length > 0 && this._rng.chance(HARD_NEAR_MAX_NUMERATOR, DIFFICULTY_DENOMINATOR)) {
         return nearMax[this._rng.nextBounded(nearMax.length)];
       }
@@ -331,46 +331,50 @@ export class Game {
   }
 
   /**
-   * 与**行优先第一个**最大方块上下左右相邻的空格。
+   * 与**当前有空位的最大方块**相邻的空格。
    *
-   * 顺序必须是「上、下、左、右」—— 引擎的 CollectEmptyNextToMax 就是这个顺序，
-   * 它决定了"取第 k 个"的结果。多个最大方块时只认第一个，这也是规则。
+   * 规则（必须与引擎的 CollectEmptyNextToLargestMovable 一致）：
+   * **按等级从高到低**找第一个"四周有空位"的方块，在它的相邻空格里选。
+   * 例如 2048 被围死、但 128 旁边有空，就放在 128 旁边 ——
+   * 只在最大块上找的话，残局里偏置几乎永远不触发。
+   *
+   * 多个同值方块取**行优先第一个**；邻居顺序固定「上、下、左、右」——
+   * 顺序决定"取第 k 个"的结果，改了就会与引擎分叉。
    */
-  _emptyCellsNextToMax(empties) {
+  _emptyCellsNextToLargestMovable(empties) {
+    const emptySet = new Set(empties.map(([r, c]) => r * SIZE + c));
+    const isFree = (r, c) =>
+      r >= 0 && r < SIZE && c >= 0 && c < SIZE && emptySet.has(r * SIZE + c);
+
     let maxExponent = 0;
     for (let r = 0; r < SIZE; r++) {
-      for (let c = 0; c < SIZE; c++) {
-        maxExponent = Math.max(maxExponent, this.board[r][c]);
-      }
+      for (let c = 0; c < SIZE; c++) maxExponent = Math.max(maxExponent, this.board[r][c]);
     }
-    if (maxExponent <= 0) return [];
 
-    let maxRow = -1;
-    let maxCol = -1;
-    outer: for (let r = 0; r < SIZE; r++) {
-      for (let c = 0; c < SIZE; c++) {
-        if (this.board[r][c] === maxExponent) {
-          maxRow = r;
-          maxCol = c;
-          break outer;
+    for (let exponent = maxExponent; exponent >= 1; exponent--) {
+      let row = -1;
+      let col = -1;
+      for (let r = 0; r < SIZE && row < 0; r++) {
+        for (let c = 0; c < SIZE; c++) {
+          if (this.board[r][c] === exponent) {
+            row = r;
+            col = c;
+            break; // 行优先第一个
+          }
         }
       }
-    }
-    if (maxRow < 0) return [];
+      if (row < 0) continue; // 盘面上没有这个等级
 
-    const wanted = [
-      [maxRow - 1, maxCol],
-      [maxRow + 1, maxCol],
-      [maxRow, maxCol - 1],
-      [maxRow, maxCol + 1],
-    ];
-    const result = [];
-    for (const [r, c] of wanted) {
-      if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) continue;
-      // 必须是空格。用 empties 判定而不是 board，保证与"空格列表"完全一致。
-      if (empties.some(([er, ec]) => er === r && ec === c)) result.push([r, c]);
+      const wanted = [
+        [row - 1, col],
+        [row + 1, col],
+        [row, col - 1],
+        [row, col + 1],
+      ];
+      const result = wanted.filter(([r, c]) => isFree(r, c));
+      if (result.length > 0) return result; // 这个等级旁边有空位 —— 就是它
     }
-    return result;
+    return [];
   }
 
   /**

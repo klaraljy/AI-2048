@@ -1,535 +1,577 @@
-/* AI-2048 前端样式
- *
- * 配色分两段：
- *   - 2 … 2048 用经典 Gabriele Cirulli 调色板（沿用参考原型的视觉基线）
- *   - 4096 以上是自选的，覆盖到 2^20；超过则复用最后一档
- *
- * 布局要点：棋盘是 position:relative 的容器，方块**绝对定位**并通过 transform 移动。
- * 这是滑动动画的前提 —— 参考原型用 CSS Grid 直接放方块，每步重建节点，
- * 那种结构下面块没有身份、也没有"上一帧位置"，动画在这一层不可能实现。
- */
+/* ===========================================================================
+   AI-2048 样式
+
+   配色（按用户指定）：
+     页面背景            #cf8571
+     棋盘底色            #9b7b78   方块"生成位置"的底色
+     棋盘格隙            #815b61
+     深色数字            #434b54   只有 2、4、8、256、512 用深色
+     浅色数字            #fefcf7   其余数字
+     分数框              #50332d
+     分数框文字          #fffefd
+     超过历史最高分的强调 #52bdab
+
+   方块配色见「方块」一节。4096 及以后统一偏黑 —— 按用户说明，再往上不变。
+
+   布局要点：棋盘是 position:relative 的容器，方块**绝对定位**并通过
+   transform 移动。这是滑动动画的前提 —— 参考原型用 CSS Grid 直接放方块、
+   每步重建节点，那种结构下方块没有身份、也没有"上一帧位置"，动画做不了。
+   =========================================================================== */
 
 :root {
-  --bg: #faf8ef;
-  --text: #776e65;
-  --heading: #776e65;
-  --board-bg: #bbada0;
-  --empty-cell: rgba(238, 228, 218, 0.35);
-  --button-bg: #8f7a66;
-  --button-hover: #9f8b77;
-  --button-text: #f9f6f2;
-  --accent: #f2b179;
-  --overlay-bg: rgba(238, 228, 218, 0.73);
-
-  /* 与 JS 中的常量保持一致 */
-  --gap: 12px;
+  --page-bg: #cf8571;
+  --board-bg: #9b7b78;
+  --board-gap: #815b61;
+  --text-dark: #434b54;
+  --text-light: #fefcf7;
+  --panel: #50332d;
+  --panel-text: #fffefd;
+  --accent: #52bdab;
   --radius: 8px;
-  --slide-ms: 110ms;
+  --gap: 12px;
 }
 
 * {
   box-sizing: border-box;
 }
 
-html,
 body {
   margin: 0;
-  padding: 0;
-}
-
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: "Clear Sans", "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-size: 16px;
-  line-height: 1.4;
-  /* 触屏上滑动时不要触发页面的滚动/缩放 */
-  overscroll-behavior: none;
+  min-height: 100vh;
+  background: var(--page-bg);
+  color: var(--text-light);
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  display: flex;
+  justify-content: center;
+  padding: 20px 16px 40px;
   -webkit-tap-highlight-color: transparent;
 }
 
 .app {
-  max-width: 520px;
-  margin: 0 auto;
-  padding: 16px 12px 32px;
+  width: 100%;
+  max-width: 560px;
 }
 
-/* ------------------------------------------------------------------ 顶部 */
+/* ------------------------------------------------------------------ 顶栏 */
 
 .topbar {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .title {
   margin: 0;
-  font-size: 40px;
-  font-weight: 700;
-  color: var(--heading);
+  font-size: 46px;
+  font-weight: 800;
+  letter-spacing: -1px;
   line-height: 1;
+  color: var(--text-light);
 }
 
-.subtitle {
-  margin: 6px 0 0;
-  font-size: 13px;
-  color: #9c8e82;
-}
-
+/* 两个分数框靠在一起、整体偏中间 */
 .scores {
   display: flex;
-  gap: 8px;
+  gap: 10px;
+  margin-right: 8%;
 }
 
 .score-box {
-  position: relative;
-  min-width: 88px;
-  padding: 8px 12px;
+  min-width: 108px;
+  padding: 7px 14px 9px;
   border-radius: var(--radius);
-  background: var(--board-bg);
-  color: #eee4da;
+  background: var(--panel);
+  color: var(--panel-text);
   text-align: center;
+  transition: background 220ms ease, color 220ms ease;
 }
 
 .score-label {
   display: block;
   font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #eee4da;
+  letter-spacing: 0.08em;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+/* 皇冠只出现在"所有时间"上 */
+.crown {
+  color: #f5c451;
+  margin-right: 1px;
 }
 
 .score-value {
   display: block;
-  font-size: 22px;
-  font-weight: 700;
-  color: #fff;
+  font-size: 24px;
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
+  line-height: 1.3;
 }
 
-/* 得分浮字：+4 之类，向上飘并淡出 */
-.score-float {
+/* 滚轮容器：数字在其中滚动，超出部分裁掉 */
+.score-roll {
+  position: relative;
+  overflow: hidden;
+  height: 1.35em;
+}
+
+/* 滚出画面的旧数字：绝对定位叠在同一位置，滚完即删 */
+.score-value-out {
   position: absolute;
-  left: 0;
-  right: 0;
-  top: 4px;
-  font-size: 20px;
-  font-weight: 700;
-  color: #776e65;
-  pointer-events: none;
-  animation: score-float 620ms ease-out forwards;
+  inset: 0;
 }
 
-@keyframes score-float {
+/* 当前分数超过历史最高 → 最高分框转为强调色 */
+.score-box.beaten {
+  background: var(--accent);
+  color: #04322a;
+}
+
+.score-box.beaten .crown {
+  color: #04322a;
+}
+
+@keyframes score-pop {
   0% {
-    opacity: 0.9;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
+  }
+  35% {
+    transform: translateY(-0.2em) scale(1.14);
   }
   100% {
-    opacity: 0;
-    transform: translateY(-34px);
+    transform: translateY(0) scale(1);
   }
 }
 
-/* ------------------------------------------------------------------ 控制 */
+.score-value.pop {
+  animation: score-pop 300ms ease-out;
+}
 
-.toolbar {
+/* ------------------------------------------------------------- 控件（单行） */
+
+.controls {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
   align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 
-button {
-  font: inherit;
-  font-weight: 700;
-  color: var(--button-text);
-  background: var(--button-bg);
-  border: 0;
+.ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 6px;
   border-radius: var(--radius);
-  padding: 9px 14px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* 难度带说明文字，给它更多宽度 */
+.ctl-wide {
+  flex: 1 1 190px;
+  min-width: 170px;
+}
+
+.ctl-seed {
+  padding: 2px 6px;
+}
+
+.ctl-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+select,
+input[type='text'] {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-light);
+  background: transparent;
+  border: 0;
+  outline: none;
   cursor: pointer;
-  transition: background 120ms ease, opacity 120ms ease;
+  width: 100%;
 }
 
-button:hover:not(:disabled) {
-  background: var(--button-hover);
+select option {
+  color: #241a18;
+  background: #fff;
 }
 
-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-button.ghost {
-  background: #cdc1b4;
-  color: #776e65;
-}
-
-button.ghost:hover:not(:disabled) {
-  background: #c0b3a5;
-}
-
-button.active {
-  background: var(--accent);
-  color: #fff;
+.ctl-seed input {
+  width: 74px;
+  text-align: center;
+  cursor: text;
 }
 
 .spacer {
   flex: 1 1 auto;
 }
 
-.option {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #9c8e82;
-}
-
-select {
+button {
   font: inherit;
-  font-size: 13px;
-  padding: 7px 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--panel-text);
+  background: var(--panel);
   border: 0;
   border-radius: var(--radius);
-  background: #cdc1b4;
-  color: #776e65;
+  padding: 7px 11px;
   cursor: pointer;
+  transition: background 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+button.ghost {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.93);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button.active {
+  background: var(--accent);
+  color: #04322a;
 }
 
 /* ------------------------------------------------------------------ 棋盘 */
 
-.board-wrap {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 1 / 1;
-  border-radius: 10px;
-  background: var(--board-bg);
-  padding: var(--gap);
-  /* 防止滑动时选中文字或触发浏览器手势 */
-  touch-action: none;
-  user-select: none;
+.board-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 
-/* 空槽背景层 */
-.grid {
+/* 两侧的庆祝轨道：不吃点击事件 */
+.fx {
+  flex: 1 1 50px;
+  max-width: 100px;
+  height: 200px;
+  pointer-events: none;
+}
+
+.board-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  width: min(100%, 452px);
+  aspect-ratio: 1 / 1;
+  padding: var(--gap);
+  border-radius: 12px;
+  background: var(--board-bg);
+  touch-action: none;
+  user-select: none;
+  /* 庆祝数字从棋盘内向上飞出，不能溢出到外面 */
+  overflow: hidden;
+}
+
+.grid,
+.tiles {
   position: absolute;
   inset: var(--gap);
+}
+
+.grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   grid-template-rows: repeat(4, 1fr);
   gap: var(--gap);
 }
 
+/* 格隙用棋盘底色透出来 → 这就是"方块与方块之间空隙的颜色" */
 .grid-cell {
   border-radius: var(--radius);
-  background: var(--empty-cell);
+  background: var(--board-gap);
 }
 
-/* 方块层。方块绝对定位，用 transform 移动 —— 这样才有 GPU 加速的平滑滑动。 */
 .tiles {
-  position: absolute;
-  inset: var(--gap);
+  pointer-events: none;
 }
+
+/* ------------------------------------------------------------------ 方块 */
 
 .tile {
   position: absolute;
-  border-radius: var(--radius);
+  top: 0;
+  left: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
+  border-radius: var(--radius);
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
+  /* 时长必须与 renderer.js 的 TIMING.slide 一致，否则动画结束后位置会跳 */
+  transition: transform 110ms ease-in-out;
   will-change: transform;
-  /* 位置过渡：滑动动画就是靠这一条 */
-  transition: transform var(--slide-ms) ease-in-out;
+  color: var(--text-light);
 }
 
-/* 刚生成的方块：缩放淡入 */
+/* ---- 配色：只有 2、4、8、256、512 用深色数字 ---- */
+.tile[data-value='2'] {
+  background: #fef0de;
+}
+.tile[data-value='4'] {
+  background: #fee8ca;
+}
+.tile[data-value='8'] {
+  background: #fdc573;
+}
+.tile[data-value='16'] {
+  background: #ffab5c;
+}
+.tile[data-value='32'] {
+  background: #fe8b54;
+}
+.tile[data-value='64'] {
+  background: #fe6e55;
+}
+.tile[data-value='128'] {
+  background: #c1c37b;
+}
+.tile[data-value='256'] {
+  background: #8cc290;
+}
+.tile[data-value='512'] {
+  background: #53beac;
+}
+.tile[data-value='1024'] {
+  background: #04b7d6;
+}
+.tile[data-value='2048'] {
+  background: #03b2f5;
+}
+/* 4096 及以后统一偏黑 —— 按用户说明，再往上不变 */
+.tile[data-value='4096'] {
+  background: #424c54;
+}
+.tile[data-value='8192'] {
+  background: #414b53;
+}
+.tile.t-deep {
+  background: #3b444c;
+}
+
+.tile[data-value='2'],
+.tile[data-value='4'],
+.tile[data-value='8'],
+.tile[data-value='256'],
+.tile[data-value='512'] {
+  color: var(--text-dark);
+}
+
+/* ---- 字号按位数递减，避免大数字溢出 ---- */
+.tile.f-2 {
+  font-size: 34px;
+}
+.tile.f-3 {
+  font-size: 30px;
+}
+.tile.f-4 {
+  font-size: 24px;
+}
+.tile.f-5 {
+  font-size: 19px;
+}
+.tile.f-6 {
+  font-size: 16px;
+}
+.tile.f-7 {
+  font-size: 13px;
+}
+
+/* ---- 动画 ---- */
+@keyframes tile-appear {
+  0% {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes tile-merge {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 .tile.new {
   animation: tile-appear 160ms ease-out;
 }
 
-@keyframes tile-appear {
-  0% {
-    opacity: 0;
-    transform: var(--tile-pos) scale(0.3);
-  }
-  100% {
-    opacity: 1;
-    transform: var(--tile-pos) scale(1);
-  }
-}
-
-/* 合并的方块：弹一下 */
 .tile.merged {
-  animation: tile-pop 170ms ease-in-out;
+  animation: tile-merge 170ms ease-out;
 }
 
-@keyframes tile-pop {
+/* 合并时飘出的 +N */
+@keyframes score-float {
   0% {
-    transform: var(--tile-pos) scale(1);
-  }
-  55% {
-    transform: var(--tile-pos) scale(1.18);
+    transform: translate(-50%, 0);
+    opacity: 1;
   }
   100% {
-    transform: var(--tile-pos) scale(1);
+    transform: translate(-50%, -46px);
+    opacity: 0;
   }
 }
 
-/* ------------------------------------------------------------------ 配色 */
-
-.tile-empty {
-  background: var(--empty-cell);
-  color: transparent;
+.score-float {
+  position: absolute;
+  left: 50%;
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text-light);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: score-float 900ms ease-out forwards;
 }
 
-.t-2 {
-  background: #eee4da;
-  color: #776e65;
-}
-.t-4 {
-  background: #ede0c8;
-  color: #776e65;
-}
-.t-8 {
-  background: #f2b179;
-  color: #f9f6f2;
-}
-.t-16 {
-  background: #f59563;
-  color: #f9f6f2;
-}
-.t-32 {
-  background: #f67c5f;
-  color: #f9f6f2;
-}
-.t-64 {
-  background: #f65e3b;
-  color: #f9f6f2;
-}
-.t-128 {
-  background: #edcf72;
-  color: #f9f6f2;
-}
-.t-256 {
-  background: #edcc61;
-  color: #f9f6f2;
-}
-.t-512 {
-  background: #edc850;
-  color: #f9f6f2;
-}
-.t-1024 {
-  background: #edc53f;
-  color: #f9f6f2;
-}
-.t-2048 {
-  background: #edc22e;
-  color: #f9f6f2;
-  box-shadow: 0 0 24px rgba(243, 215, 116, 0.6);
-}
-.t-4096 {
-  background: #3c3a32;
-  color: #f9f6f2;
-}
-.t-8192 {
-  background: #2f80ed;
-  color: #f9f6f2;
-}
-.t-16384 {
-  background: #9b51e0;
-  color: #f9f6f2;
-}
-.t-32768 {
-  background: #eb5757;
-  color: #f9f6f2;
-}
-.t-65536 {
-  background: #00b894;
-  color: #f9f6f2;
-}
-.t-131072 {
-  background: #0984e3;
-  color: #f9f6f2;
-}
-.t-262144 {
-  background: #6c5ce7;
-  color: #f9f6f2;
-}
-.t-524288 {
-  background: #d63031;
-  color: #f9f6f2;
-}
-.t-1048576 {
-  background: #00cec9;
-  color: #f9f6f2;
+/* 庆祝时飞出的数字：**纯数字，没有框**（按用户要求） */
+@keyframes celebration-number {
+  0% {
+    transform: translate(-50%, 10px) scale(calc(var(--scale) * 0.4));
+    opacity: 0;
+  }
+  25% {
+    transform: translate(-50%, -4px) scale(var(--scale));
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -70px) scale(calc(var(--scale) * 1.1));
+    opacity: 0;
+  }
 }
 
-/* 字号按数值位数缩小 */
-.f-2 {
-  font-size: clamp(20px, 8.5cqw, 34px);
-}
-.f-3 {
-  font-size: clamp(18px, 7.5cqw, 28px);
-}
-.f-4 {
-  font-size: clamp(15px, 6cqw, 22px);
-}
-.f-5 {
-  font-size: clamp(13px, 5cqw, 18px);
-}
-.f-6 {
-  font-size: clamp(11px, 4cqw, 14px);
-}
-.f-7 {
-  font-size: clamp(9px, 3.2cqw, 12px);
+.celebration-number {
+  position: absolute;
+  left: var(--x, 50%);
+  bottom: 22%;
+  font-size: 30px;
+  font-weight: 900;
+  color: #fff6d8;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: 4;
+  animation: celebration-number 1050ms ease-out forwards;
 }
 
-.board-wrap {
-  container-type: inline-size;
-}
+/* ------------------------------------------------------------ 结束遮罩 */
 
-/* ------------------------------------------------------------------ 遮罩 */
-
+/* 只在真正结束时出现。达到 2048 不再弹窗（会打断 AI 演示），
+   改为在棋盘两侧放小烟花。 */
 .overlay {
   position: absolute;
   inset: 0;
-  border-radius: 10px;
-  background: var(--overlay-bg);
-  display: flex;
+  display: none;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 12px;
+  border-radius: 12px;
+  padding: 20px;
   text-align: center;
-  padding: 16px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 260ms ease;
-  z-index: 10;
+  background: rgba(80, 51, 45, 0.88);
+  z-index: 5;
 }
 
 .overlay.show {
-  opacity: 1;
-  pointer-events: auto;
+  display: flex;
 }
 
 .overlay h2 {
   margin: 0;
-  font-size: clamp(24px, 7cqw, 38px);
-  color: var(--heading);
+  font-size: 26px;
 }
 
 .overlay p {
   margin: 0;
   font-size: 14px;
-  color: #9c8e82;
+  opacity: 0.92;
+}
+
+.overlay > div {
+  display: flex;
+  gap: 8px;
 }
 
 /* ------------------------------------------------------------------ 提示 */
 
-.notice {
-  margin-top: 12px;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  font-size: 13px;
-  background: #fff3cd;
-  color: #856404;
-  border: 1px solid #ffeeba;
-}
-
-.notice.hidden {
-  display: none;
-}
-
-/* 难度提示：与 .notice 同族，但语气更弱（橙色而非黄色），
-   因为"非标准难度"是一个常态提示，不是警告。 */
+.notice,
 .session-notice {
   margin-top: 12px;
   padding: 9px 12px;
   border-radius: var(--radius);
   font-size: 12px;
-  background: #fdeee0;
-  color: #9a5b23;
-  border: 1px solid #f5d9bd;
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--text-light);
 }
 
+.notice.hidden,
 .session-notice.hidden {
   display: none;
 }
 
 .hint {
-  margin-top: 16px;
-  font-size: 13px;
-  color: #9c8e82;
-  line-height: 1.6;
-}
-
-/* 紧跟在控件下面的说明：比 .hint 更轻，且上边距小，视觉上属于上面那组控件 */
-.sub-hint {
-  margin-top: -4px;
-  margin-bottom: 14px;
+  margin-top: 14px;
   font-size: 12px;
-  color: #a99c90;
-}
-
-/* 控件前的小标签：让「AI 强度」「AI 速度」在视觉上对齐，
-   否则下拉框宽度不同时会显得参差 */
-.option-label {
-  white-space: nowrap;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.84);
 }
 
 kbd {
   display: inline-block;
   padding: 1px 6px;
+  margin: 0 1px;
   border-radius: 4px;
-  background: #eee4da;
-  border: 1px solid #ddd0c2;
+  background: rgba(255, 255, 255, 0.22);
   font-family: inherit;
-  font-size: 12px;
-  color: #776e65;
+  font-size: 11px;
 }
 
-/* ------------------------------------------------------------------ 无障碍 */
+/* -------------------------------------------------------------- 无障碍 */
 
-/* 尊重系统的"减少动态效果"设置：关掉所有动画，但**不能卡住**。
-   注意：滑块位移仍要立即生效，否则方块位置会停留在旧位置。 */
+/* 尊重"减少动态效果"：关掉装饰性动画，但**不能卡住位置** ——
+   renderer 仍然立刻设置 transform，只是没有过渡。 */
 @media (prefers-reduced-motion: reduce) {
-  :root {
-    --slide-ms: 0ms;
+  .tile {
+    transition: none;
   }
-
-  .tile,
   .tile.new,
   .tile.merged,
+  .score-value.pop,
   .score-float {
-    animation: none !important;
-    transition: none !important;
+    animation: none;
   }
 }
 
 @media (max-width: 420px) {
-  :root {
-    --gap: 9px;
+  .fx {
+    display: none;
   }
-
-  .title {
-    font-size: 32px;
-  }
-
-  .score-box {
-    min-width: 74px;
-    padding: 6px 10px;
-  }
-
-  .score-value {
-    font-size: 18px;
+  .scores {
+    margin-right: 0;
   }
 }

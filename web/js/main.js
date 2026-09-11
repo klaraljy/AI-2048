@@ -13,6 +13,7 @@ import { Game, maxTile, board_values } from './game.js';
 import { Renderer } from './renderer.js';
 import { Input, DIRECTION } from './input.js';
 import { Sound } from './sound.js';
+import { Celebration } from './celebration.js';
 import { createTransport } from './transport.js';
 import {
   SPEED,
@@ -72,6 +73,9 @@ const el = {
   overlayUndo: document.getElementById('overlay-undo'),
   overlayRestart: document.getElementById('overlay-restart'),
   notice: document.getElementById('notice'),
+  bestBox: document.getElementById('best-box'),
+  fxLeft: document.getElementById('fx-left'),
+  fxRight: document.getElementById('fx-right'),
 };
 
 /** 从 URL 查询参数读引擎地址：?engine=ws://127.0.0.1:8765 */
@@ -114,8 +118,19 @@ const renderer = new Renderer({
 
 const sound = new Sound();
 
+/** 棋盘两侧的庆祝烟花。达到里程碑 / 合并出新大块时放。 */
+const celebration = new Celebration({
+  leftCanvas: el.fxLeft,
+  rightCanvas: el.fxRight,
+  host: el.board,
+});
+
 let game = null;
 let best = readBest();
+/** 本局已经庆祝过的最大块（同一个值只庆祝一次，避免每步都放）。 */
+let maxCelebrated = 0;
+/** 2048 里程碑只庆祝一次。 */
+let celebrated2048 = false;
 let transport = null;
 let transportDegraded = true;
 let autoRunning = false;
@@ -190,6 +205,7 @@ async function performMove(direction) {
     best = game.score;
     writeBest(best);
     renderer.setBest(best);
+    refreshBestHighlight();
   }
 
   // 音效：有合并就放合并音（音高随最大合并块上升），否则放滑动音
@@ -203,10 +219,32 @@ async function performMove(direction) {
   }
   if (step.spawned) sound.play('spawn');
 
+  // 庆祝：合并出**新纪录级别的大块**时，在棋盘两侧放小烟花并弹出数字。
+  // 用"首次出现的最大块"作为判据，而不是每步都放 ——
+  // 每步都放会变成噪声，也让 AI 演示看着很吵。
+  checkCelebration(mergedExponent);
+
   // 走到这里动画已经结束，renderer.busy() 为假，输入自然解锁
   checkEndState();
   refreshControls();
   return true;
+}
+
+/**
+ * 合并出历史新高的方块时庆祝一次。
+ *
+ * 阈值：4 及以上都值得弹一下（用户在测试时需要明确的反馈），
+ * 但方块越大规模越大。
+ */
+function checkCelebration(mergedExponent) {
+  if (mergedExponent <= 0) return;
+  const value = 2 ** mergedExponent;
+  if (value <= maxCelebrated) return; // 同一个值只庆祝第一次
+
+  maxCelebrated = value;
+  // 指数 2（=4）规模 0.8，指数 11（=2048）规模约 1.5
+  const scale = 0.8 + Math.min(8, mergedExponent - 2) * 0.1;
+  celebration.celebrate(String(value), scale);
 }
 
 async function doUndo() {
@@ -215,7 +253,9 @@ async function doUndo() {
 
   sound.play('undo');
   hideOverlay();
+  maxCelebrated = 0; // 撤销后允许重新庆祝
   renderer.reset(game.board, { score: game.score, best });
+  refreshBestHighlight();
   refreshControls();
 }
 
@@ -228,9 +268,11 @@ function checkEndState() {
     stopAuto();
     return;
   }
-  if (game.reached2048) {
-    sound.play('win');
-    showOverlay('达到 2048！', '可以继续玩，挑战更大的方块', { allowUndo: false, transient: true });
+  // 达到 2048 **不再弹窗** —— 弹窗会打断 AI 演示，用户明确反馈过
+  // "走一下弹一下"没法测。改成两侧烟花（在 performMove 里已经放了）。
+  if (game.reached2048 && !celebrated2048) {
+    celebrated2048 = true;
+    celebration.celebrate('2048', 2);
   }
 }
 
@@ -270,7 +312,8 @@ function startAuto() {
   if (autoRunning) return;
   autoRunning = true;
   el.aiAuto.classList.add('active');
-  el.aiAuto.textContent = '停止';
+  el.aiAuto.textContent = '■';
+  el.aiAuto.title = '停止 AI 演示';
   refreshControls();
 
   const loop = async () => {
@@ -292,7 +335,8 @@ function stopAuto() {
     autoTimer = null;
   }
   el.aiAuto.classList.remove('active');
-  el.aiAuto.textContent = 'AI 自动';
+  el.aiAuto.textContent = '▶';
+  el.aiAuto.title = 'AI 自动演示';
   refreshControls();
 }
 
@@ -302,19 +346,34 @@ function newGame() {
   stopAuto();
   hideOverlay();
 
-  const forced = el.seedShown.dataset.forcedSeed;
-  const choice = forced !== undefined ? forced : el.seed.value;
-  delete el.seedShown.dataset.forcedSeed;
-  const seed = choice === 'random' ? Math.floor(Math.random() * 1e9) : Number(choice);
+  // 「开局」是一个**文本输入框**：填数字就是固定种子，填 random 就随机。
+  // 它只服务于测试（固定种子才能公平比较强度），完结时删掉即可。
+  const raw = (el.seed.value || 'random').trim();
+  const seed = /^\d+$/.test(raw) ? Number(raw) : Math.floor(Math.random() * 1e9);
 
   // 难度是**规则**的一部分，必须传给 Game —— 不传的话界面选了"简单"
   // 而生成仍然是全盘随机，用户会以为难度没生效（而且他无法分辨）。
   game = new Game(seed, currentDifficulty());
   lastMove = null;
-  el.seedShown.textContent = `本局种子 ${seed}`;
+  maxCelebrated = 0;
+  celebrated2048 = false;
   renderer.reset(game.board, { score: game.score, best });
   refreshDifficultyNotice();
+  refreshBestHighlight();
   refreshControls();
+  celebration.relayout();
+}
+
+/**
+ * 「所有时间」分数框的状态。
+ *
+ * 平时是深色底 + 白字；**当前分数超过历史最高时**底色与文字都变成强调色，
+ * 而且这个状态只在超过期间保持 —— 这是用户指定的行为。
+ */
+function refreshBestHighlight() {
+  if (!el.bestBox) return;
+  const beaten = game !== null && game.score > 0 && game.score >= best;
+  el.bestBox.classList.toggle('beaten', beaten);
 }
 
 /** 当前难度。元素缺失或值不认识时退回标准档（绝不悄悄变成别的难度）。 */
@@ -349,9 +408,15 @@ function refreshDifficultyNotice() {
 
 function toggleMute() {
   const muted = sound.toggleMuted();
-  el.mute.textContent = muted ? '音效关' : '音效开';
-  el.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
+  updateMuteIcon(muted);
   if (!muted) sound.unlock();
+}
+
+/** 静音按钮用图标表示状态，不再用文字（文字会把控件行挤开）。 */
+function updateMuteIcon(muted) {
+  el.mute.textContent = muted ? '🔇' : '🔊';
+  el.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
+  el.mute.title = muted ? '音效已关（M）' : '音效开（M）';
 }
 
 function showNotice(text) {
@@ -362,8 +427,7 @@ function showNotice(text) {
 // ------------------------------------------------------------------ 启动
 
 async function boot() {
-  el.mute.textContent = sound.muted ? '音效关' : '音效开';
-  el.mute.setAttribute('aria-pressed', sound.muted ? 'true' : 'false');
+  updateMuteIcon(sound.muted);
 
   if (el.difficulty) fillSelect(el.difficulty, difficultyOptions(), DEFAULT_DIFFICULTY);
   fillSelect(el.strength, strengthOptions(), 'standard');
@@ -407,20 +471,31 @@ async function boot() {
   });
 
   window.addEventListener('resize', () => renderer.relayout());
-  window.addEventListener('orientationchange', () => setTimeout(() => renderer.relayout(), 120));
+  window.addEventListener('resize', () => {
+    renderer.relayout();
+    celebration.relayout();
+  });
+  window.addEventListener('orientationchange', () =>
+    setTimeout(() => {
+      renderer.relayout();
+      celebration.relayout();
+    }, 120)
+  );
 
   // 标签页切回来时排一次版：尺寸可能在后台变过
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) renderer.relayout();
+    if (!document.hidden) {
+      renderer.relayout();
+      celebration.relayout();
+    }
   });
 
   // 供 Android 的 WebView 桥接使用（里程碑 6）。
   // 只暴露必要动作，不让外部拿到内部对象。
   window.AI2048 = {
     newGame: (seed) => {
-      if (seed !== undefined) {
-        el.seedShown.dataset.forcedSeed = String(seed);
-      }
+      // 固定种子走同一个入口（界面上的输入框），避免两条路径行为不一致
+      if (seed !== undefined) el.seed.value = String(seed);
       newGame();
     },
     undo: () => void doUndo(),

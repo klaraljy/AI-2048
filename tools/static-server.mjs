@@ -42,6 +42,11 @@ const MIME = {
   '.ttf': 'font/ttf',
   '.txt': 'text/plain; charset=utf-8',
   '.map': 'application/json; charset=utf-8',
+  // 音频：音效采样用 fetch + decodeAudioData 读，MIME 不影响解码，
+  // 但写对了在 DevTools 里更容易看出资源是否加载正确
+  '.wav': 'audio/wav',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
 };
 
 function parseArgs(argv) {

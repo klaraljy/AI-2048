@@ -90,27 +90,30 @@ std::array<double, kCellCount> SpawnWeights(std::uint64_t board, Difficulty diff
     }
     bias = static_cast<double>(kEasyCornerNumerator) / static_cast<double>(kDifficultyDenominator);
   } else if (difficulty == Difficulty::kHard) {
-    const int max_exponent = MaxExponent(board);
-    if (max_exponent > 0) {
-      int max_row = -1;
-      int max_col = -1;
-      for (int i = 0; i < kCellCount && max_row < 0; ++i) {
-        if (GetExponent(board, i) == max_exponent) {
-          max_row = i / kBoardSize;
-          max_col = i % kBoardSize;
+    constexpr std::array<std::array<int, 2>, 4> kOffsets = {{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
+    // 与生成规则一致：**按等级从高到低**找第一个"四周有空位"的方块。
+    // 只看最大块是不够的 —— 它在残局常被围死，而偏置本该落在
+    // "还有空位的大块"旁边，否则残局里这条规则等于不生效。
+    for (int exponent = MaxExponent(board); exponent >= 1 && candidate_count == 0; --exponent) {
+      int row = -1;
+      int col = -1;
+      for (int index = 0; index < kCellCount; ++index) {
+        if (GetExponent(board, index) == exponent) {
+          row = index / kBoardSize;
+          col = index % kBoardSize;
+          break;  // 行优先第一个
         }
       }
-      if (max_row >= 0) {
-        constexpr std::array<std::array<int, 2>, 4> kOffsets = {{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
-        for (const auto& offset : kOffsets) {
-          const int r = max_row + offset[0];
-          const int c = max_col + offset[1];
-          if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
-          const int index = r * kBoardSize + c;
-          if (GetExponent(board, index) == 0) {
-            candidates[static_cast<std::size_t>(candidate_count)] = index;
-            ++candidate_count;
-          }
+      if (row < 0) continue;  // 盘面上没有这个等级
+
+      for (const auto& offset : kOffsets) {
+        const int r = row + offset[0];
+        const int c = col + offset[1];
+        if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
+        const int index = r * kBoardSize + c;
+        if (GetExponent(board, index) == 0) {
+          candidates[static_cast<std::size_t>(candidate_count)] = index;
+          ++candidate_count;
         }
       }
     }
