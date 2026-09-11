@@ -453,18 +453,20 @@ button.active {
   animation: score-float 900ms ease-out forwards;
 }
 
-/* 庆祝时飞出的数字：**纯数字，没有框**（按用户要求） */
+/* 庆祝时飞出的数字：**纯数字，没有框**（按用户要求）。
+   --x 控制水平位置、--y 控制起始高度、--scale 控制大小，
+   三个数字由 celebration.js 分散开，互不重叠。 */
 @keyframes celebration-number {
   0% {
-    transform: translate(-50%, 10px) scale(calc(var(--scale) * 0.4));
+    transform: translate(-50%, 12px) scale(calc(var(--scale) * 0.4));
     opacity: 0;
   }
-  25% {
-    transform: translate(-50%, -4px) scale(var(--scale));
+  22% {
+    transform: translate(-50%, -6px) scale(var(--scale));
     opacity: 1;
   }
   100% {
-    transform: translate(-50%, -70px) scale(calc(var(--scale) * 1.1));
+    transform: translate(-50%, -78px) scale(calc(var(--scale) * 1.08));
     opacity: 0;
   }
 }
@@ -472,14 +474,14 @@ button.active {
 .celebration-number {
   position: absolute;
   left: var(--x, 50%);
-  bottom: 22%;
+  bottom: var(--y, 28%);
   font-size: 30px;
   font-weight: 900;
   color: #fff6d8;
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
   pointer-events: none;
   z-index: 4;
-  animation: celebration-number 1050ms ease-out forwards;
+  animation: celebration-number 1200ms ease-out forwards;
 }
 
 /* ------------------------------------------------------------ 结束遮罩 */

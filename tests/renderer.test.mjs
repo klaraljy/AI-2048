@@ -197,6 +197,50 @@ console.log('renderer 冒烟测试：');
   check('动画结束后 busy 为假', renderer.busy() === false);
 }
 
+// 6. 合并轨迹里的 exponent 是**合并前**的值
+//
+// 这条断言来自一个真实的 off-by-one：庆祝时"合成 8 却弹出 4"，
+// 而且永远是一半 —— 因为调用方把被吸收方块的 exponent 当成了结果值。
+// 这里把这个语义钉死，以后谁改动 moves 的含义会立刻失败。
+{
+  const { applyMove } = await import('../web/js/game.js');
+
+  // 两个 4（指数 2）合成一个 8（指数 3）
+  const board = [[2, 2, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  const result = applyMove(board, DIRECTION.left);
+
+  const absorbed = result.moves.filter((m) => m.merged);
+  check('两个 4 合成后有一条"被吸收"的轨迹', absorbed.length === 1, `实际 ${absorbed.length}`);
+
+  if (absorbed.length === 1) {
+    check(
+      '被吸收轨迹的 exponent 是合并**前**的值（2，也就是 4）',
+      absorbed[0].exponent === 2,
+      `实际 ${absorbed[0].exponent}`
+    );
+    check(
+      '合并**结果**的指数 = 被吸收的指数 + 1（3，也就是 8）',
+      absorbed[0].exponent + 1 === 3,
+      '调用方必须 +1 才能拿到结果值'
+    );
+    check(
+      '棋盘上的结果确实是 8（指数 3）',
+      result.board[0][0] === 3,
+      `实际 ${result.board[0][0]}`
+    );
+  }
+}
+
+// 7. 合成更大块的同一语义（1024 = 指数 10，庆祝阈值）
+{
+  const { applyMove } = await import('../web/js/game.js');
+  const board = [[9, 9, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  const result = applyMove(board, DIRECTION.left);
+  const absorbed = result.moves.filter((m) => m.merged);
+  check('两个 512 合成 1024：被吸收的 exponent 是 9', absorbed[0]?.exponent === 9);
+  check('结果指数是 10（=1024，庆祝阈值）', result.board[0][0] === 10, `实际 ${result.board[0][0]}`);
+}
+
 console.log('');
 if (failures > 0) {
   console.error(`renderer 冒烟测试失败：${failures} 项`);

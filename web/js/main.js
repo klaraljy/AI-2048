@@ -208,20 +208,29 @@ async function performMove(direction) {
     refreshBestHighlight();
   }
 
-  // 音效：有合并就放合并音（音高随最大合并块上升），否则放滑动音
-  const mergedExponent = step.moves
+  // 音效与庆祝都要用**合并结果**的指数，不是被吸收那张牌的指数。
+  //
+  // ⚠️ `move.merged === true` 的那条记录描述的是**被吸收**的方块，
+  // 它的 exponent 是合并**之前**的值（见 game.js：`exponent: packed[absorbedIndex]`）。
+  // 两个 4 合成 8 时它记的是 2（=4），所以结果指数是 exponent + 1。
+  //
+  // 这里踩过坑：直接把那个值当结果用，于是"合成 8 却弹出 4"，
+  // 而且**永远是一半** —— 因为差值恰好是一个二的幂次。
+  const absorbedExponent = step.moves
     .filter((m) => m.merged)
     .reduce((acc, m) => Math.max(acc, m.exponent), 0);
+  const mergedExponent = absorbedExponent > 0 ? absorbedExponent + 1 : 0;
+
   if (mergedExponent > 0) {
-    sound.playMerge(mergedExponent + 1);
+    sound.playMerge(mergedExponent);
   } else {
     sound.play('slide');
   }
   if (step.spawned) sound.play('spawn');
 
-  // 庆祝：合并出**新纪录级别的大块**时，在棋盘两侧放小烟花并弹出数字。
-  // 用"首次出现的最大块"作为判据，而不是每步都放 ——
-  // 每步都放会变成噪声，也让 AI 演示看着很吵。
+  // 庆祝：合并出足够大的新块时，在棋盘两侧放小烟花并弹出数字。
+  // 用"首次出现的更大块"作为判据，而不是每步都放 ——
+  // 每步都放会变成噪声，AI 演示时也吵。
   checkCelebration(mergedExponent);
 
   // 走到这里动画已经结束，renderer.busy() 为假，输入自然解锁
@@ -230,20 +239,22 @@ async function performMove(direction) {
   return true;
 }
 
+/** 从多大的块开始庆祝。用户指定：1024 起步，更小的不用管。 */
+const CELEBRATE_FROM_EXPONENT = 10; // 2^10 = 1024
+
 /**
  * 合并出历史新高的方块时庆祝一次。
  *
- * 阈值：4 及以上都值得弹一下（用户在测试时需要明确的反馈），
- * 但方块越大规模越大。
+ * @param {number} mergedExponent **合并结果**的指数（2^10 = 1024）
  */
 function checkCelebration(mergedExponent) {
-  if (mergedExponent <= 0) return;
+  if (mergedExponent < CELEBRATE_FROM_EXPONENT) return;
   const value = 2 ** mergedExponent;
   if (value <= maxCelebrated) return; // 同一个值只庆祝第一次
 
   maxCelebrated = value;
-  // 指数 2（=4）规模 0.8，指数 11（=2048）规模约 1.5
-  const scale = 0.8 + Math.min(8, mergedExponent - 2) * 0.1;
+  // 1024 规模 1.0，2048 约 1.2 …… 上限约 1.8，块越大越隆重
+  const scale = 1.0 + Math.min(8, mergedExponent - CELEBRATE_FROM_EXPONENT) * 0.1;
   celebration.celebrate(String(value), scale);
 }
 

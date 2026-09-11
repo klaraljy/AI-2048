@@ -137,6 +137,29 @@ class FireworksLane {
 }
 
 /**
+ * 把 count 个水平位置均匀分散在棋盘中部，带少量抖动。
+ *
+ * 纯随机会有较大概率两个数字挨得很近、叠在一起看不清，
+ * 所以用"均分 + 抖动"而不是纯随机。
+ *
+ * @returns {number[]} 百分比位置，长度 count
+ */
+function spreadSlots(count) {
+  const slots = [];
+  for (let i = 0; i < count; i++) {
+    const base = ((i + 0.5) / count) * 100; // 均分
+    const jitter = (Math.random() - 0.5) * (40 / count); // 抖动幅度随个数收窄
+    slots.push(Math.min(88, Math.max(12, base + jitter)));
+  }
+  // 打乱顺序，避免总是"从左往右依次出现"
+  for (let i = slots.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [slots[i], slots[j]] = [slots[j], slots[i]];
+  }
+  return slots;
+}
+
+/**
  * 两侧烟花 + 数字弹出。
  *
  * 数字只用 DOM 元素，跟着烟花一起出现、淡出后自己删掉 ——
@@ -162,10 +185,12 @@ export class Celebration {
 
   /**
    * 庆祝一次。
+   *
    * @param {string} [text] 要弹出来的数字（纯数字，无框）
    * @param {number} [scale] 规模：块越大越隆重
+   * @param {number} [count] 弹几个数字 —— 用户要求弹 3 个
    */
-  celebrate(text = '', scale = 1) {
+  celebrate(text = '', scale = 1, count = 3) {
     if (prefersReducedMotion()) return;
 
     // 两侧错开一点，别像镜像
@@ -173,18 +198,35 @@ export class Celebration {
     this.left.burst(y, scale);
     setTimeout(() => this.right.burst(0.3 + Math.random() * 0.3, scale), 90);
 
-    if (text && this.host) this._floatNumber(text, scale);
+    if (!text || !this.host) return;
+
+    // 弹多个：位置分散 + 时间错开，否则会叠在一起看不清
+    const slots = spreadSlots(count);
+    for (let i = 0; i < count; i++) {
+      const delay = i * 120;
+      if (delay === 0) {
+        this._floatNumber(text, scale, slots[i]);
+      } else {
+        setTimeout(() => this._floatNumber(text, scale, slots[i]), delay);
+      }
+    }
   }
 
-  _floatNumber(text, scale) {
+  /**
+   * 把窗口内水平位置分散开，避免多个数字重叠。
+   *
+   * 均分 + 少量抖动：纯随机有较大概率两个挨得很近。
+   */
+  _floatNumber(text, scale, leftPercent) {
     const node = document.createElement('div');
     node.className = 'celebration-number';
     node.textContent = text;
-    // 位置在棋盘内随机偏一点，避免每次都从正中弹出
-    node.style.setProperty('--x', `${30 + Math.random() * 40}%`);
+    node.style.setProperty('--x', `${leftPercent}%`);
     node.style.setProperty('--scale', String(Math.min(1.9, 1 + (scale - 1) * 0.5)));
+    // 纵向也错开，避免同一高度排成一行
+    node.style.setProperty('--y', `${18 + Math.random() * 26}%`);
     this.host.appendChild(node);
-    setTimeout(() => node.remove(), 1100);
+    setTimeout(() => node.remove(), 1300);
   }
 
   destroy() {
