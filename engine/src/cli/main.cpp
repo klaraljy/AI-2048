@@ -218,6 +218,10 @@ struct Options {
   config.time_budget_ms = options.time_budget_ms;
   config.chance_sample_limit = options.chance_limit;
   config.weights = options.weight_overrides;
+  // AI 的**世界模型**必须与实际游戏的生成规则一致：
+  // 不传的话 AI 一律按全盘均匀评估，hard 档下会低估
+  // "新块贴着自己最大块出现"的风险，走子偏乐观。
+  config.difficulty = options.difficulty;
   return config;
 }
 

@@ -106,8 +106,13 @@ using json::Value;
   return true;
 }
 
-/** 把请求里的 config 合并进会话配置。只认已知键，未知键忽略（便于前端先行扩展）。 */
-void ApplyConfig(const Value& config, ai2048::SearchConfig* target) {
+/**
+ * 把请求里的 config 合并进会话配置。只认已知键，未知键忽略（便于前端先行扩展）。
+ *
+ * @param difficulty_changed 若难度发生变化则置 true —— 难度影响 chance 节点的
+ *   概率分布，也就是**影响搜索结果**，调用方必须据此清空置换表。
+ */
+void ApplyConfig(const Value& config, ai2048::SearchConfig* target, bool* difficulty_changed) {
   if (!config.IsObject()) return;
 
   const auto int_or = [&](std::string_view key, int fallback) {
@@ -116,6 +121,27 @@ void ApplyConfig(const Value& config, ai2048::SearchConfig* target) {
   const auto num_or = [&](std::string_view key, double fallback) {
     return config.GetNumber(key, fallback);
   };
+
+  // 难度是 AI 的**世界模型**：它决定 chance 节点里各空格被击中的相对概率。
+  // 不设的话 AI 一律按全盘均匀评估，hard 档下会低估
+  // "新块贴着自己最大块出现"的风险，走子偏乐观。
+  if (const Value* difficulty = config.Find("difficulty")) {
+    if (difficulty->IsString()) {
+      const std::string name = ToLower(difficulty->AsString());
+      ai2048::Difficulty parsed = target->difficulty;
+      if (name == "easy") {
+        parsed = ai2048::Difficulty::kEasy;
+      } else if (name == "hard") {
+        parsed = ai2048::Difficulty::kHard;
+      } else if (name == "normal") {
+        parsed = ai2048::Difficulty::kNormal;
+      }
+      if (parsed != target->difficulty) {
+        target->difficulty = parsed;
+        *difficulty_changed = true;
+      }
+    }
+  }
 
   target->base_depth = std::clamp(int_or("baseDepth", target->base_depth), 2, 20);
   target->min_depth = std::clamp(int_or("minDepth", target->min_depth), 2, 20);
@@ -386,7 +412,13 @@ void ProtocolHandler::HandleMessage(ConnectionId id, Session* session, const std
   if (type == "configure") {
     if (payload != nullptr) {
       const Value* config = payload->Find("config");
-      if (config != nullptr) ApplyConfig(*config, &session->config);
+      if (config != nullptr) {
+        bool difficulty_changed = false;
+        ApplyConfig(*config, &session->config, &difficulty_changed);
+        // 难度变了必须清空置换表：表里的值是按**旧的生成规则**算出来的，
+        // 继续用会让 AI 按错误的世界模型走子，而且完全没有报错。
+        if (difficulty_changed) session->table.Reset();
+      }
     }
     SendResult(id, request_id, "{\"ok\":true}");
     return;

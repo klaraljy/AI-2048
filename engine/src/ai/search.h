@@ -20,6 +20,7 @@
 
 #include "ai/evaluate.h"
 #include "core/board.h"
+#include "core/game.h"
 
 namespace ai2048 {
 
@@ -28,7 +29,10 @@ namespace ai2048 {
 // 单局 939 步就白花 8.8 秒（占该局总耗时的 98%），而搜索本身只要 0.15 秒。
 //
 // 用法：一局开始时构造一个（或 Reset），之后每步传给 SearchBestMove。
-// 表内容只由棋盘与深度决定，不依赖搜索历史，所以跨步复用不影响正确性。
+//
+// ⚠️ 表内容由「棋盘 + 深度 + 难度」共同决定（难度影响 chance 节点的概率分布）。
+// 所以**换难度必须 Reset**：不重置会读到按另一套生成规则算出的值。
+// 同一局之内难度不变，因此跨步复用仍然安全。
 class TranspositionTable {
  public:
   static constexpr std::size_t kDefaultCapacity = 1u << 20;
@@ -93,6 +97,19 @@ struct SearchConfig {
   // 限制后按固定顺序保留前 N 个空格 —— 保持搜索的确定性。
   int chance_sample_limit = 0;
 
+  // AI 搜索时假设的**生成难度**。
+  //
+  // 这决定 chance 节点里"新方块落在各空格的相对概率"。默认 kNormal
+  // （全盘均匀）= 标准 2048，也是历史基准使用的假设。
+  //
+  // 为什么必须可配：难度改的就是落点分布。如果 AI 一律按均匀分布评估，
+  // 那么 hard 档下它会**低估**"新块贴着自己最大块出现"的风险 ——
+  // 世界模型与实际游戏不符，走子会偏乐观。
+  //
+  // ⚠️ 它参与搜索结果，所以**换难度必须清空置换表**
+  // （见 game.h 的说明；服务端在收到 configure 时处理）。
+  ai2048::Difficulty difficulty = ai2048::Difficulty::kNormal;
+
   // 时间预算（毫秒）。0 = 不限时。**超时也必须返回已完成搜索中的最佳合法步。**
   int time_budget_ms = 0;
 
@@ -139,6 +156,21 @@ struct SearchResult {
   std::vector<MoveEvaluation> evaluations;
   SearchStats stats;
 };
+
+/**
+ * 按难度算出**每个格子被打上新方块的相对权重**。
+ *
+ * 这是 AI 的"世界模型"：chance 节点用它给各分支加权，从而让搜索的假设
+ * 与实际生成规则一致。非空格子的权重定义为 0。
+ *
+ * 暴露出来是为了**可测试** —— 它与 core/game.cpp 的 Game::SpawnRandomTile
+ * 是同一套规则的两种表达，写错了不会有任何报错，只会让 AI 悄悄变弱或变乐观。
+ * tests/difficulty_test.cpp 会拿它和实际生成分布对拍。
+ *
+ * @return 长度 kCellCount 的数组，索引 = row * kBoardSize + col
+ */
+[[nodiscard]] std::array<double, kCellCount> SpawnWeights(std::uint64_t board,
+                                                          Difficulty difficulty);
 
 // 选择最佳方向。
 //

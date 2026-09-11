@@ -33,6 +33,109 @@ constexpr std::uint8_t kKindChance = 2;
 // 这里用 -1e30，既不会与正常分数混淆，也不会在累加/平均时溢出。
 constexpr float kLostValue = -1.0e30F;
 
+}  // namespace
+
+/**
+ * 每个格子被打上新方块的**相对权重**，按当前难度的生成规则算。
+ *
+ * 必须与 core/game.cpp 的 Game::SpawnRandomTile **语义一致** ——
+ * 这是 AI 的"世界模型"，与实际游戏不符会让它低估风险或高估机会。
+ * 一致性由 tests/difficulty_test.cpp 的 DifficultyWorldModel 系列断言保证
+ * （它是把这里的权重归一化后，与实际采样 20000 次得到的频率逐格比较）。
+ *
+ * 生成规则是两个分支的混合，所以权重也必须是**两个条件分布的加权和**：
+ *
+ *   偏置分支以概率 b 在候选集合 C 里均匀选一个；
+ *   否则（概率 1-b）在全盘空格里均匀选一个。
+ *
+ *   → 命中候选的格子： w = b/|C| + (1-b)/|空格|
+ *   → 其他空格：       w =         (1-b)/|空格|
+ *   → 已占格：         不作要求（搜索只遍历空格）
+ *
+ * 其中 easy 的 b=0.7、C=空角落；hard 的 b=0.8、C=最大块的相邻空格；
+ * normal 没有偏置分支，退化成 w = 1/|空格|。
+ *
+ * ⚠️ 踩过的坑：一开始把基础项写成 `1/|空格|`（也就是按"均匀"满额填），
+ * 然后把偏置项加上去 —— 那等价于假设"未命中偏置时仍然按 1/空格 分配"，
+ * 但后面的归一化会把它压掉，于是命中格的相对优势被系统性高估
+ * （实测 easy 角上预测 0.142 而实际 0.196）。
+ * 正确的基础项是 `(1-b)/|空格|`。
+ *
+ * 用 double 而不是 float：这些权重会被反复相乘累加，
+ * float 在深搜里会累积可见的误差。
+ */
+std::array<double, kCellCount> SpawnWeights(std::uint64_t board, Difficulty difficulty) {
+  std::array<double, kCellCount> weights{};
+
+  int empty_count = 0;
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) == 0) ++empty_count;
+  }
+  if (empty_count == 0) {
+    weights.fill(0.0);
+    return weights;
+  }
+
+  // 先把"候选集合"和偏置概率定下来
+  std::array<int, kCellCount> candidates{};
+  int candidate_count = 0;
+  double bias = 0.0;
+
+  if (difficulty == Difficulty::kEasy) {
+    for (const int index : {0, 3, 12, 15}) {
+      if (GetExponent(board, index) == 0) {
+        candidates[static_cast<std::size_t>(candidate_count)] = index;
+        ++candidate_count;
+      }
+    }
+    bias = static_cast<double>(kEasyCornerNumerator) / static_cast<double>(kDifficultyDenominator);
+  } else if (difficulty == Difficulty::kHard) {
+    const int max_exponent = MaxExponent(board);
+    if (max_exponent > 0) {
+      int max_row = -1;
+      int max_col = -1;
+      for (int i = 0; i < kCellCount && max_row < 0; ++i) {
+        if (GetExponent(board, i) == max_exponent) {
+          max_row = i / kBoardSize;
+          max_col = i % kBoardSize;
+        }
+      }
+      if (max_row >= 0) {
+        constexpr std::array<std::array<int, 2>, 4> kOffsets = {{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
+        for (const auto& offset : kOffsets) {
+          const int r = max_row + offset[0];
+          const int c = max_col + offset[1];
+          if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
+          const int index = r * kBoardSize + c;
+          if (GetExponent(board, index) == 0) {
+            candidates[static_cast<std::size_t>(candidate_count)] = index;
+            ++candidate_count;
+          }
+        }
+      }
+    }
+    bias = static_cast<double>(kHardNearMaxNumerator) / static_cast<double>(kDifficultyDenominator);
+  }
+
+  // 偏置不可用（没有候选格）时整条规则退化成全盘均匀 —— 与生成实现一致。
+  if (candidate_count == 0) bias = 0.0;
+
+  const double uniform = 1.0 / static_cast<double>(empty_count);
+  const double base_share = (1.0 - bias) * uniform;
+  weights.fill(base_share);
+
+  if (candidate_count > 0 && bias > 0.0) {
+    const double candidate_share = bias / static_cast<double>(candidate_count);
+    for (int i = 0; i < candidate_count; ++i) {
+      weights[static_cast<std::size_t>(candidates[static_cast<std::size_t>(i)])] += candidate_share;
+    }
+  }
+
+  return weights;
+}
+
+namespace {
+
 // 混合函数：避免低位相同的棋盘挤在同一个桶里。
 [[nodiscard]] std::uint64_t MixHash(std::uint64_t board, std::uint8_t kind) noexcept {
   std::uint64_t x = board ^ (static_cast<std::uint64_t>(kind) * 0x9E37'79B9'7F4A'7C15ULL);
@@ -261,7 +364,34 @@ class Searcher {
     }
     if (empty_count == 0) return Evaluate(board, config_.weights);
 
-    const double per_cell = probability / static_cast<double>(empty_count);
+    // 每个空格被打上新方块的**相对权重**。
+    //
+    // 默认（kNormal）全部为 1 = 均匀分布，即标准 2048。
+    // 另两档要按难度的生成规则加权，否则 AI 的世界模型与实际游戏不符：
+    //   easy 下它低估了"角上会冒出新块"的概率（保守，无害）
+    //   hard 下它低估了"最大块旁边会冒出新块"的风险（**有害**，走子偏乐观）
+    //
+    // 注意这里算的是**相对**权重，后面会按 weight_sum 归一化，
+    // 所以只需要各格之间的比例正确，不必凑出绝对概率。
+    std::array<double, kCellCount> cell_weight{};
+    cell_weight.fill(1.0);
+    double weight_total = static_cast<double>(empty_count);
+    if (config_.difficulty != Difficulty::kNormal) {
+      weight_total = 0.0;
+      const std::array<double, kCellCount> weights = SpawnWeights(board, config_.difficulty);
+      for (int i = 0; i < empty_count; ++i) {
+        const auto index = static_cast<std::size_t>(empty_cells[static_cast<std::size_t>(i)]);
+        cell_weight[index] = weights[index];
+        weight_total += weights[index];
+      }
+    }
+
+    // 归一化前先做概率剪枝的判据：某个空格本身的权重占比。
+    // 全盘均匀时就是 1/空格数（与旧实现一致）。
+    const auto per_cell_weight = [&](int index) {
+      if (weight_total <= 0.0) return 0.0;
+      return cell_weight[static_cast<std::size_t>(index)] / weight_total;
+    };
 
     int limit = empty_count;
     if (config_.chance_sample_limit > 0) {
@@ -273,18 +403,19 @@ class Searcher {
 
     for (int i = 0; i < limit; ++i) {
       const int index = empty_cells[static_cast<std::size_t>(i)];
+      const double cell_share = per_cell_weight(index) * probability;
       for (int exponent = 1; exponent <= 2; ++exponent) {
-        const double piece_probability = per_cell * (exponent == 2 ? kProbFour : kProbTwo);
+        const double branch_probability = cell_share * (exponent == 2 ? kProbFour : kProbTwo);
         // 概率剪枝：极不可能的分支直接丢弃。
-        if (config_.enable_probability_cutoff && piece_probability < config_.probability_cutoff) {
+        if (config_.enable_probability_cutoff && branch_probability < config_.probability_cutoff) {
           ++stats_.pruned_by_probability;
           continue;
         }
 
         const std::uint64_t next = SetExponent(board, index, exponent);
-        total += static_cast<float>(
-            piece_probability * static_cast<double>(SearchMax(next, depth - 1, piece_probability)));
-        weight_sum += piece_probability;
+        total += static_cast<float>(branch_probability * static_cast<double>(SearchMax(
+                                                             next, depth - 1, branch_probability)));
+        weight_sum += branch_probability;
       }
     }
 

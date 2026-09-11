@@ -86,9 +86,19 @@ function describeSpeed(value) {
   return '正常观看';
 }
 
-/** 发给引擎的 configure 报文。字段名与 docs/protocol.md 的约定一致。 */
-export function toEngineConfig(spec) {
-  return { baseDepth: spec.depth, timeBudgetMs: spec.budgetMs };
+/**
+ * 发给引擎的 configure 报文。字段名与 docs/protocol.md 的约定一致。
+ *
+ * 除强度参数外还要带上**难度** —— 它是 AI 的世界模型：
+ * 引擎按它给 chance 节点的各空格加权。不带的话 AI 一律假设"全盘均匀"，
+ * hard 档下会低估"新块贴着自己最大块出现"的风险，走子偏乐观。
+ */
+export function toEngineConfig(spec, difficulty = DIFFICULTY_NORMAL) {
+  return {
+    baseDepth: spec.depth,
+    timeBudgetMs: spec.budgetMs,
+    difficulty,
+  };
 }
 
 /**
@@ -119,13 +129,21 @@ export function specFor(value) {
 //
 // ⚠️ 分数**不跨难度可比**：改的是生成规则，简单档分数天然更高。
 // ---------------------------------------------------------------------------
+export const DIFFICULTY_EASY = 'easy';
+export const DIFFICULTY_NORMAL = 'normal';
+export const DIFFICULTY_HARD = 'hard';
+
 export const DIFFICULTY = {
   easy: { label: '简单', note: '70% 生成在角落' },
   normal: { label: '中等', note: '全盘随机（标准）' },
   hard: { label: '困难', note: '80% 生成在最大块旁' },
 };
 
-export const DEFAULT_DIFFICULTY = 'normal';
+/**
+ * 默认难度 = 标准 2048。**不得改动** ——
+ * 所有历史分数与公开基准都是在标准规则下取得的。
+ */
+export const DEFAULT_DIFFICULTY = DIFFICULTY_NORMAL;
 
 export function difficultyOptions() {
   return Object.entries(DIFFICULTY).map(([value, spec]) => ({
@@ -137,9 +155,9 @@ export function difficultyOptions() {
 
 /** 难度是不是标准规则。非标准时界面要提示分数不可与基准比较。 */
 export function isStandardDifficulty(value) {
-  return value === DEFAULT_DIFFICULTY;
+  return value === DIFFICULTY_NORMAL;
 }
 
 export function difficultyLabel(value) {
-  return DIFFICULTY[value]?.label ?? DIFFICULTY[DEFAULT_DIFFICULTY].label;
+  return DIFFICULTY[value]?.label ?? DIFFICULTY[DIFFICULTY_NORMAL].label;
 }

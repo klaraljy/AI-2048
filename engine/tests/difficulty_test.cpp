@@ -25,11 +25,13 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "ai/search.h"
 #include "core/board.h"
 #include "core/game.h"
 
@@ -447,6 +449,279 @@ TEST(DifficultySpawn, DifferentDifficultiesActuallyDifferOnTheSameSeed) {
 
   EXPECT_TRUE(easy != normal || hard != normal || easy != hard)
       << "三档在同一粒子上跑出完全相同的对局，难度没有生效";
+}
+
+// ---------------------------------------------------------------------------
+// AI 的世界模型：SpawnWeights 必须与实际生成分布一致
+//
+// 这是最容易悄悄写错的地方：SpawnWeights 与 Game::SpawnRandomTile 是同一套
+// 规则的两种表达。不一致时**不会有任何报错**，只会让 AI 按错误的世界模型
+// 评估风险 —— 例如 hard 档下低估"新块贴着自己最大块出现"的概率。
+//
+// 验法：把 SpawnWeights 归一化成概率，与实际采样 20000 次得到的频率比较。
+// ---------------------------------------------------------------------------
+
+/**
+ * 把权重归一化成概率。
+ *
+ * ⚠️ **必须传入盘面**：SpawnWeights 对已占格不置零（搜索里只看空格，
+ * 那些位置根本不会被访问）。如果照着原始数组求和，总权重会偏大，
+ * 每格概率都被系统性压低 —— 实测表现为"已占格算出 1/16 的概率"，
+ * 看起来像实现有 bug，其实是这个辅助函数漏了一步。
+ *
+ * 这里显式跳过已占格：它们既不计入总和，结果也置 0。
+ */
+[[nodiscard]] std::array<double, kCellCount> Normalize(
+    const std::array<double, kCellCount>& weights, std::uint64_t board) {
+  double total = 0.0;
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) == 0) total += weights[static_cast<std::size_t>(i)];
+  }
+  std::array<double, kCellCount> out{};
+  if (total <= 0.0) return out;
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) != 0) continue;  // 已占格概率必为 0
+    out[static_cast<std::size_t>(i)] = weights[static_cast<std::size_t>(i)] / total;
+  }
+  return out;
+}
+
+/** 在固定盘面上实际采样，返回各格的出现频率。 */
+[[nodiscard]] std::array<double, kCellCount> EmpiricDistribution(Difficulty difficulty,
+                                                                 std::uint64_t board, int trials) {
+  std::array<int, kCellCount> counts{};
+  Game game(987654, difficulty);
+  for (int i = 0; i < trials; ++i) {
+    game.SetBoardForTesting(board);
+    const SpawnRecord record = game.SpawnRandomTile();
+    if (record.exponent == 0) continue;
+    counts[static_cast<std::size_t>(record.row * kBoardSize + record.col)]++;
+  }
+  std::array<double, kCellCount> out{};
+  for (std::size_t i = 0; i < counts.size(); ++i) {
+    out[i] = static_cast<double>(counts[i]) / static_cast<double>(trials);
+  }
+  return out;
+}
+
+/** 两个分布的逐格差值上限。 */
+[[nodiscard]] double MaxAbsDiff(const std::array<double, kCellCount>& a,
+                                const std::array<double, kCellCount>& b) {
+  double worst = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) worst = std::max(worst, std::abs(a[i] - b[i]));
+  return worst;
+}
+
+TEST(DifficultyWorldModel, WeightsMatchActualSpawnDistribution) {
+  struct Case {
+    const char* name;
+    Difficulty difficulty;
+    std::uint64_t board;
+  };
+  const std::vector<Case> cases = {
+      {"normal/中央盘面", Difficulty::kNormal, BoardMaxInCenter()},
+      {"normal/稀疏盘面", Difficulty::kNormal, BoardMaxSurrounded()},
+      {"easy/中央盘面", Difficulty::kEasy, BoardMaxInCenter()},
+      {"easy/四角已占", Difficulty::kEasy, BoardCornersTaken()},
+      {"hard/中央盘面", Difficulty::kHard, BoardMaxInCenter()},
+      {"hard/最大块被围死", Difficulty::kHard, BoardMaxSurrounded()},
+  };
+
+  for (const Case& item : cases) {
+    const std::array<double, kCellCount> predicted =
+        Normalize(SpawnWeights(item.board, item.difficulty), item.board);
+    const std::array<double, kCellCount> actual =
+        EmpiricDistribution(item.difficulty, item.board, kTrials);
+
+    // 先自检：实际分布的**总和必须接近 1**。
+    // 不等于 1 说明采样本身有问题（例如大量生成被跳过），
+    // 那时比较分布毫无意义 —— 这个自检能避免把"测试写错"误判成"实现有 bug"。
+    double actual_sum = 0.0;
+    for (const double p : actual) actual_sum += p;
+    ASSERT_NEAR(actual_sum, 1.0, 0.02)
+        << item.name << " 的实际分布总和是 " << actual_sum << "，采样本身有问题";
+
+    double predicted_sum = 0.0;
+    for (const double p : predicted) predicted_sum += p;
+    ASSERT_NEAR(predicted_sum, 1.0, 1e-9) << item.name << " 的预测分布没有归一化";
+
+    // 20000 次采样、概率量级 1/16 时标准误约 0.0018；放宽到 0.01 留足余量。
+    const double diff = MaxAbsDiff(predicted, actual);
+    if (diff >= 0.01) {
+      // 失败时把**盘面**与两个分布并排打出来。
+      // 只说"偏差 0.0625"没法定位，而 0.0625 恰好是 1/16 ——
+      // 这类数字暗示某一格被系统性地多算或少算，必须看到盘面才能判断。
+      std::string dump = item.name;
+      dump += "\n      —— 盘面（值，. 表示空）——";
+      for (int r = 0; r < kBoardSize; ++r) {
+        dump += "\n      ";
+        for (int c = 0; c < kBoardSize; ++c) {
+          const int exponent = GetExponent(item.board, r * kBoardSize + c);
+          if (exponent == 0) {
+            dump += "      .";
+          } else {
+            char buffer[24];
+            std::snprintf(buffer, sizeof(buffer), "%7llu",
+                          static_cast<unsigned long long>(ExponentToValue(exponent)));
+            dump += buffer;
+          }
+        }
+      }
+      dump += "\n      —— 每格两行：预测 / 实际 ——";
+      for (int r = 0; r < kBoardSize; ++r) {
+        std::string predicted_row = "\n      预测 ";
+        std::string actual_row = "\n      实际 ";
+        for (int c = 0; c < kBoardSize; ++c) {
+          char buffer[32];
+          const auto index = static_cast<std::size_t>(r * kBoardSize + c);
+          std::snprintf(buffer, sizeof(buffer), "%7.4f", predicted[index]);
+          predicted_row += buffer;
+          std::snprintf(buffer, sizeof(buffer), "%7.4f", actual[index]);
+          actual_row += buffer;
+        }
+        dump += predicted_row + actual_row;
+      }
+      ADD_FAILURE() << dump;
+    }
+    EXPECT_LT(diff, 0.01) << item.name << " 的权重与实际生成分布不符（最大偏差 " << diff
+                          << "）—— AI 的世界模型是错的";
+  }
+}
+
+TEST(DifficultyWorldModel, NormalWeightsAreUniform) {
+  const std::array<double, kCellCount> weights =
+      SpawnWeights(BoardMaxInCenter(), Difficulty::kNormal);
+  // 15 个空格 → 各格 1/15
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(BoardMaxInCenter(), i) != 0) continue;
+    EXPECT_NEAR(weights[static_cast<std::size_t>(i)], 1.0 / 15.0, 1e-12);
+  }
+}
+
+TEST(DifficultyWorldModel, EasyWeightsFavourCorners) {
+  const std::uint64_t board = BoardMaxInCenter();
+  const std::array<double, kCellCount> weights = SpawnWeights(board, Difficulty::kEasy);
+  // 四角全空 → 权重最高的就是这四格
+  for (const int corner : kCorners) {
+    EXPECT_GT(weights[static_cast<std::size_t>(corner)], 1.0 / 15.0)
+        << "角落 " << corner << " 的权重没有高于均匀值";
+  }
+  // 非角落应低于均匀值（偏置把概率从它们那里挪走了）
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) != 0 || IsCorner(i)) continue;
+    EXPECT_LT(weights[static_cast<std::size_t>(i)], 1.0 / 15.0)
+        << "非角落 " << i << " 的权重不该高于均匀值";
+  }
+}
+
+TEST(DifficultyWorldModel, HardWeightsFavourNeighboursOfMax) {
+  const std::uint64_t board = BoardMaxInCenter();
+  const MaxCell max_cell = FirstMaxCell(board);
+  const std::array<double, kCellCount> weights = SpawnWeights(board, Difficulty::kHard);
+
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) != 0) continue;
+    const int row = i / kBoardSize;
+    const int col = i % kBoardSize;
+    if (IsAdjacent(row, col, max_cell.row, max_cell.col)) {
+      EXPECT_GT(weights[static_cast<std::size_t>(i)], 1.0 / 15.0)
+          << "相邻格 " << i << " 的权重没有高于均匀值";
+    } else {
+      EXPECT_LT(weights[static_cast<std::size_t>(i)], 1.0 / 15.0)
+          << "非相邻格 " << i << " 的权重不该高于均匀值";
+    }
+  }
+}
+
+TEST(DifficultyWorldModel, SurroundedMaxDisablesHardBiasInTheWorldModelToo) {
+  // 最大块被围死时，hard 的偏置不可用 → 世界模型必须退化成均匀。
+  // 若这里没退化，AI 会以为"某些格子更容易冒出新块"，
+  // 而实际游戏是均匀的 —— 世界模型比游戏更"自信"，属于更糟的错误。
+  const std::uint64_t board = BoardMaxSurrounded();
+  ASSERT_EQ(EmptyNeighboursOfMax(board), 0) << "盘面自检：最大块四邻必须全被占";
+
+  const std::array<double, kCellCount> weights = SpawnWeights(board, Difficulty::kHard);
+  const int empties = EmptyCount(board);
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) != 0) continue;
+    EXPECT_NEAR(weights[static_cast<std::size_t>(i)], 1.0 / empties, 1e-12)
+        << "偏置不可用时权重应完全均匀";
+  }
+}
+
+TEST(DifficultyWorldModel, WeightsAreZeroOnOccupiedCells) {
+  // 已占格子的权重必须是 0，否则 chance 节点会去"在已占格上生成"，
+  // 那会算出物理上不可能的盘面。
+  const std::uint64_t board = BoardMaxSurrounded();
+  for (const Difficulty difficulty : {Difficulty::kEasy, Difficulty::kNormal, Difficulty::kHard}) {
+    const std::array<double, kCellCount> weights = SpawnWeights(board, difficulty);
+    for (int i = 0; i < kCellCount; ++i) {
+      if (GetExponent(board, i) != 0) continue;
+      EXPECT_GT(weights[static_cast<std::size_t>(i)], 0.0)
+          << "空格 " << i << " 的权重不该是 0（难度 " << DifficultyName(difficulty) << "）";
+    }
+  }
+}
+
+TEST(DifficultyWorldModel, FullBoardHasNoWeights) {
+  const std::uint64_t board = EncodeBoard({1, 2, 1, 2, 2, 1, 2, 1, 1, 2, 1, 2, 2, 1, 2, 1});
+  ASSERT_EQ(EmptyCount(board), 0);
+  for (const Difficulty difficulty : {Difficulty::kEasy, Difficulty::kNormal, Difficulty::kHard}) {
+    const std::array<double, kCellCount> weights = SpawnWeights(board, difficulty);
+    for (const double w : weights) EXPECT_DOUBLE_EQ(w, 0.0);
+  }
+}
+
+TEST(DifficultyWorldModel, DifficultyChangesTheAIMove) {
+  // 世界模型变了，走子至少要**有可能**不同。
+  // 不断言"一定不同"（强 AI 在多数局面下结论一致是正常的），
+  // 而是在一批真实局面上统计：应该有相当比例的局面给出不同走子。
+  int compared = 0;
+  int different = 0;
+
+  for (std::uint64_t seed = 1; seed <= 12; ++seed) {
+    Game game(seed, Difficulty::kHard);
+    TranspositionTable table(1u << 16, false);
+
+    for (int step = 0; step < 120 && !game.game_over(); ++step) {
+      SearchConfig base;
+      base.base_depth = 4;
+      base.min_depth = 4;
+      base.max_depth = 4;
+
+      SearchConfig as_normal = base;
+      as_normal.difficulty = Difficulty::kNormal;
+      const SearchResult a = SearchBestMove(game.board(), as_normal, &table, std::nullopt);
+
+      SearchConfig as_hard = base;
+      as_hard.difficulty = Difficulty::kHard;
+      table.Reset();  // 换难度必须清表（协议层也是这么做的）
+      const SearchResult b = SearchBestMove(game.board(), as_hard, &table, std::nullopt);
+
+      if (a.move.has_value() && b.move.has_value()) {
+        ++compared;
+        if (a.move != b.move) ++different;
+      }
+
+      table.Reset();
+      bool moved = false;
+      for (const Direction d :
+           {Direction::kDown, Direction::kLeft, Direction::kRight, Direction::kUp}) {
+        if (game.Step(d).moved) {
+          moved = true;
+          break;
+        }
+      }
+      if (!moved) break;
+    }
+  }
+
+  EXPECT_GT(compared, 100) << "对比的局面太少，测试没有说服力";
+  // 只要**存在**差异就说明世界模型确实参与了决策；
+  // 比例本身取决于局面，不作为质量判据。
+  EXPECT_GT(different, 0) << "在 " << compared
+                          << " 个局面里，按 normal 与按 hard 评估给出的走子完全相同 —— "
+                             "难度可能没有传进搜索";
 }
 
 }  // namespace

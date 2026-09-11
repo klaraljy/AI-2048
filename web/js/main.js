@@ -134,9 +134,9 @@ function currentInterval() {
 }
 
 /**
- * 把当前强度告诉引擎，并同步前端的等待超时。
+ * 把当前强度与难度告诉引擎，并同步前端的等待超时。
  *
- * 两件事必须一起做：只改引擎不改超时，或反之，都会表现成"引擎响应超时"。
+ * 三件事必须一起做：只改引擎不改超时，或只改强度不改难度，都会出问题。
  * 失败不抛给用户 —— 引擎不可用时本来就会走降级路径并已在页面上提示。
  */
 async function applyStrength() {
@@ -146,7 +146,9 @@ async function applyStrength() {
   }
   if (!transport || transportDegraded || typeof transport.configure !== 'function') return;
   try {
-    await transport.configure(toEngineConfig(spec));
+    // 带上难度：引擎按它给 chance 节点的各空格加权，也就是 AI 的世界模型。
+    // 不传的话 hard 档下 AI 会低估"新块贴着自己最大块出现"的风险。
+    await transport.configure(toEngineConfig(spec, currentDifficulty()));
   } catch {
     // 引擎中途断了之类：不打断玩，下一步会走 transport 自己的错误路径
   }
@@ -398,7 +400,11 @@ async function boot() {
   el.speed.addEventListener('change', () => {});
   // 难度是规则的一部分，改档必须重开一局 ——
   // 否则同一局会前半段一套生成规则、后半段另一套，分数失去意义。
-  el.difficulty.addEventListener('change', () => newGame());
+  // 还要同步告诉引擎：难度是 AI 的世界模型，不同步的话它会按旧规则评估走子。
+  el.difficulty.addEventListener('change', () => {
+    newGame();
+    void applyStrength();
+  });
 
   window.addEventListener('resize', () => renderer.relayout());
   window.addEventListener('orientationchange', () => setTimeout(() => renderer.relayout(), 120));
