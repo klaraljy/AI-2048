@@ -99,34 +99,6 @@ struct MaxCell {
   return 0;
 }
 
-/** 某个等级"行优先第一个"方块的相邻空位（顺序：上、下、左、右）。 */
-[[nodiscard]] std::vector<int> EmptyNeighboursOfExponent(std::uint64_t board, int exponent) {
-  std::vector<int> result;
-  if (exponent <= 0) return result;
-
-  int row = -1;
-  int col = -1;
-  for (int index = 0; index < kCellCount; ++index) {
-    if (GetExponent(board, index) == exponent) {
-      row = index / kBoardSize;
-      col = index % kBoardSize;
-      break;
-    }
-  }
-  if (row < 0) return result;
-
-  constexpr int kDr[] = {-1, 1, 0, 0};
-  constexpr int kDc[] = {0, 0, -1, 1};
-  for (int k = 0; k < 4; ++k) {
-    const int r = row + kDr[k];
-    const int c = col + kDc[k];
-    if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
-    const int index = r * kBoardSize + c;
-    if (GetExponent(board, index) == 0) result.push_back(index);
-  }
-  return result;
-}
-
 [[nodiscard]] MaxCell FirstMaxCell(std::uint64_t board) {
   MaxCell cell;
   const int max_exp = MaxExponent(board);

@@ -2,14 +2,12 @@
 //
 // ## 为什么要有这个
 //
-// 手写启发式（evaluate.cpp）已经到顶了：实测多给 6 倍算力只换来 ~1.1 倍分数，
-// 而且 8192 到达率在 100 局上仍是 0%。瓶颈不在搜索，在**评估函数认不出
-// 什么盘面能走到 8192**。参考实现把 75% 的权重压在单一的蛇形项上，
-// 也说明手写项的信息量就那么多。
+// 手写启发式（evaluate.cpp）已经到顶了：实测多给 6 倍算力只换来 ~1.1 倍分数
+// （d4 42,792 → d8 46,851），而且 8192 到达率在 100 局上仍是 0%。
+// 瓶颈不在搜索，在**评估函数认不出什么盘面能走到 8192**。
 //
 // 这条路（Szubert 2014 的 n-tuple + TD 学习）不手搓权重，而是从
-// **自我对弈的结果**里学：网络预测"这个盘面最终能拿多少分"，
-// 用实际结果纠正它。它不依赖我猜的系数。
+// **自我对弈的真实得分**里学。
 //
 // ## 网络结构
 //
@@ -18,16 +16,31 @@
 //
 //     价值(盘面) = Σ_tuple W[tuple][该 tuple 的格子指数组合]
 //
-// 单个 4-tuple（4 个格子、指数 0..15）的下标空间是 16^4 = 65536。
-// 这是标准做法：tuple 越小、表越小、泛化越好，但表达能力也越弱。
-// C1 阶段刻意用**单 tuple**（约 12.8 万参数）先验证"能不能学"，
-// 学得动再往上加 tuple 数量与长度。
+// 单个 tuple 的表大小是 16^长度：
+//     4-tuple →      65,536 项（256 KB）
+//     5-tuple →   1,048,576 项（  4 MB）
+//     6-tuple →  16,777,216 项（ 67 MB）
+//
+// ## 容量与样本效率的取舍（C1 → C2 的核心认识）
+//
+// C1 只用 4 个 4-tuple（26 万参数），实测只能学到约 2,300 分。
+// 原因是**表达能力**：4 个 tuple 全在同一行内，看不到跨行结构，
+// 而 2048 的棋力核心（蛇形、跨行单调链）恰恰是跨行的。
+//
+// 提升有两条路，可以并用：
+//   1. **加数量**：多个不同形状的 4-tuple（行/列/2×2/L 形/对角）。
+//      参数增长线性，每个样本能更新到所有 tuple —— 样本效率高。
+//   2. **加长度**：6-tuple 能表达跨 6 格的形状，容量大得多。
+//      但每个样本只更新到很少的权重，需要**更多局数**才收敛。
+//
+// 所以 C2 先走"加数量"（MixedTuples，便宜且立竿见影），
+// 再叠加"加长度"（WithSixTuples）。
 //
 // ## 权重表布局
 //
-// 所有 tuple 的权重放在**一块连续数组**里，按下标直接寻址：
-//     offset = tuple_index * kTupleStates + pattern_index
-// 这样一次查表就是一次数组访问，没有间接跳转 —— 训练和推断都靠它提速。
+// 所有 tuple 的权重放在**一块连续数组**里，用一张偏移表寻址：
+//     offset = offsets[tuple_index] + 该 tuple 的组合下标
+// 一次查表就是一次数组访问，没有间接跳转 —— 训练和推断都靠它提速。
 
 #ifndef AI2048_AI_LEARN_VALUE_NETWORK_H_
 #define AI2048_AI_LEARN_VALUE_NETWORK_H_
@@ -41,16 +54,26 @@
 
 namespace ai2048::learn {
 
-/** 一个 tuple：一组格子位置（下标 0..15）。 */
-struct Tuple {
-  std::array<int, 4> cells{};  // 4 个格子的线性下标
+/** 单个 tuple 最多覆盖几个格子。6 是内存与表达能力的折中（见文件头）。 */
+inline constexpr int kMaxTupleLength = 6;
 
-  /** 提取该 tuple 在当前盘面上的组合下标（0 .. 16^4-1）。 */
+/** 一个 tuple：一组格子位置（线性下标 0..15）。 */
+struct Tuple {
+  std::array<int, kMaxTupleLength> cells{};
+  int length = 0;  // 实际使用前 length 个
+
+  /** 该 tuple 的组合数：16^length。 */
+  [[nodiscard]] std::uint32_t StateCount() const noexcept;
+
+  /** 提取该 tuple 在当前盘面上的组合下标。 */
   [[nodiscard]] std::uint32_t Index(std::uint64_t board) const noexcept;
 };
 
-/** 单个 4-tuple 的组合数：16^4 = 65536。 */
-inline constexpr std::uint32_t kTupleStates = 16 * 16 * 16 * 16;
+/** 造一个 tuple。
+ *  @param cells 格子下标，长度必须等于 count
+ *  @param count 格子数（2..kMaxTupleLength）
+ */
+[[nodiscard]] Tuple MakeTuple(const std::vector<int>& cells);
 
 /**
  * n-tuple 价值网络。
@@ -65,34 +88,52 @@ class ValueNetwork {
 
   /**
    * 建一个网络。
-   * @param tuples tuple 的集合（每个 4 格）。至少 1 个。
+   * @param tuples tuple 的集合。空的话会被替换成一个占位 tuple（见 .cpp）。
    */
   explicit ValueNetwork(std::vector<Tuple> tuples);
 
-  /**
-   * 标准布局：把 4x4 盘面按行切成 4 个 4-tuple。
-   *
-   * 这是最朴素的切法，也最容易被验证 —— C1 只要证明"能学"，
-   * 不需要一开始就上最优的 tuple 设计（那是 C2/C3 的事）。
-   */
+  /** C1 布局：按行切成 4 个 4-tuple。表达能力不足，只用于对照。 */
   [[nodiscard]] static std::vector<Tuple> RowTuples();
 
-  /** 盘面价值（归一化后）。 */
-  [[nodiscard]] double Evaluate(std::uint64_t board) const noexcept;
+  /**
+   * C2 布局 A：混合形状的 4-tuple（行 / 列 / 2×2 / L 形 / 对角），共 12 个。
+   * 参数约 79 万。
+   */
+  [[nodiscard]] static std::vector<Tuple> MixedTuples();
 
   /**
-   * 带梯度信息的评估：顺便记录本次用到的权重下标。
+   * C2 布局 B：MixedTuples 再加若干个 6-tuple。
+   * @param six_tuple_count 6-tuple 的数量（0~4）。每个约 67MB。
+   */
+  [[nodiscard]] static std::vector<Tuple> WithSixTuples(int six_tuple_count);
+
+  /**
+   * 一次评估的"痕迹"：价值 + 本次用到的权重下标。
    *
-   * TD 更新要往这些下标上写，所以训练时必须走这条路 ——
+   * 训练时必须走带 trace 的路径 —— TD 更新要往这些下标上写，
    * 事后重算一遍下标会慢一倍。
    */
   struct Trace {
     double value = 0.0;
-    std::array<std::uint32_t, 8> offsets{};  // 每个 tuple 一个权重下标
+    std::array<std::uint32_t, 32> offsets{};  // 每个 tuple 一个权重下标
     int count = 0;
   };
 
-  [[nodiscard]] Trace EvaluateWithTrace(std::uint64_t board) const noexcept;
+  /**
+   * 带痕迹的评估。
+   *
+   * @param terminal 是否是**终局**。为真时价值定义为 0 ——
+   *   也就是"从这里之后再也拿不到分了"。
+   *
+   *   这不是可选的细节。不区分终局的话，最后一步的 afterstate 会被当成
+   *   "后面还有分可拿"，它的价值朝着那一步的奖励收敛而不是朝着 0；
+   *   这个偏置顺着 TD 链污染整张表，表现就是**加容量、加局数都卡在
+   *   同一个分数上**（实测 4-tuple → 6-tuple，参数 ×85，分数都是 2,300）。
+   */
+  [[nodiscard]] Trace EvaluateWithTrace(std::uint64_t board, bool terminal = false) const noexcept;
+
+  /** 盘面价值（归一化后）。terminal 的含义同上。 */
+  [[nodiscard]] double Evaluate(std::uint64_t board, bool terminal = false) const noexcept;
 
   /** 按 trace 记录的权重下标做一次梯度上升。 */
   void ApplyGradient(const Trace& trace, double delta, double learning_rate) noexcept;
@@ -102,13 +143,19 @@ class ValueNetwork {
 
   [[nodiscard]] std::size_t tuple_count() const noexcept { return tuples_.size(); }
   [[nodiscard]] std::size_t parameter_count() const noexcept { return weights_.size(); }
+  /** 参数占用的内存（MB），用于在训练前提示体积。 */
+  [[nodiscard]] double parameter_megabytes() const noexcept {
+    return static_cast<double>(weights_.size()) * sizeof(float) / (1024.0 * 1024.0);
+  }
 
-  /** 保存/加载权重（简单的二进制格式，见 .cpp 里的说明）。 */
+  /** 保存/加载权重（二进制格式，含 tuple 布局，见 .cpp 的说明）。 */
   [[nodiscard]] bool Save(const std::string& path, std::string* error) const;
   [[nodiscard]] bool Load(const std::string& path, std::string* error);
 
  private:
   std::vector<Tuple> tuples_;
+  /** 每个 tuple 在 weights_ 里的起始偏移。 */
+  std::vector<std::uint32_t> offsets_;
   std::vector<float> weights_;
 };
 

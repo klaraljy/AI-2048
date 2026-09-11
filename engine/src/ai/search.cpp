@@ -275,6 +275,31 @@ namespace {
 // 搜索上下文
 // ---------------------------------------------------------------------------
 
+/**
+ * 叶子评估：配了学习评估就用它，否则用手写启发式。
+ *
+ * 抽成一个函数是为了让"到底用哪个评估"只有一处真相 ——
+ * 之前 5 个叶子出口各写一遍 Evaluate(board, weights)，
+ * 接管的时候漏掉一处就会变成两种评估混用，分数会毫无道理地掉。
+ *
+ * @param terminal 该局面是否已经终局。学习评估需要这个标志来输出 0
+ *   （"之后再也拿不到分"）；手写启发式不区分终局，只看盘面形状。
+ */
+[[nodiscard]] float SearchEvaluate(const SearchConfig& config, std::uint64_t board,
+                                   bool terminal = false) {
+  if (config.leaf_evaluator != nullptr) {
+    // terminal 默认参数不够用：chance 节点的叶子是"生成新方块之后"的盘面，
+    // 它完全可能已经被堵死。学习评估不被告知终局的话会把死局评成正分 ——
+    // 这正是 C1 阶段"加容量、加局数都卡在 2,300 分"的那个 bug 的搜索侧版本。
+    //
+    // 探测代价很低（最多 4 次走子，且通常第一次就命中），
+    // 而且只在接了学习评估时才付这个代价。
+    const bool is_dead = terminal || !HasLegalMove(board);
+    return config.leaf_evaluator(config.leaf_evaluator_context, board, is_dead);
+  }
+  return Evaluate(board, config.weights);
+}
+
 class Searcher {
  public:
   Searcher(const SearchConfig& config, TranspositionTable* table)
@@ -298,7 +323,7 @@ class Searcher {
   // max 节点：玩家选一个方向，取所有方向里的最大值。
   [[nodiscard]] float SearchMax(std::uint64_t board, int depth, double probability) {
     ++stats_.nodes;
-    if (OutOfTime()) return Evaluate(board, config_.weights);
+    if (OutOfTime()) return SearchEvaluate(config_, board);
 
     if (table_ != nullptr) {
       if (const auto cached = table_->Lookup(board, depth, kKindMax)) {
@@ -333,7 +358,7 @@ class Searcher {
     } else if (depth <= 0) {
       // 深度用完但仍有路可走：用静态评估。这里特意放在死局判定**之后**，
       // 顺序反了就会重演"地平线内的死局变成正分"。
-      best = Evaluate(board, config_.weights);
+      best = SearchEvaluate(config_, board);
     }
 
     if (table_ != nullptr) {
@@ -347,8 +372,8 @@ class Searcher {
   [[nodiscard]] float SearchChance(std::uint64_t board, int depth, double probability) {
     ++stats_.nodes;
     ++stats_.chance_nodes;
-    if (OutOfTime()) return Evaluate(board, config_.weights);
-    if (depth <= 0) return Evaluate(board, config_.weights);
+    if (OutOfTime()) return SearchEvaluate(config_, board);
+    if (depth <= 0) return SearchEvaluate(config_, board);
 
     if (table_ != nullptr) {
       if (const auto cached = table_->Lookup(board, depth, kKindChance)) {
@@ -365,7 +390,7 @@ class Searcher {
         ++empty_count;
       }
     }
-    if (empty_count == 0) return Evaluate(board, config_.weights);
+    if (empty_count == 0) return SearchEvaluate(config_, board);
 
     // 每个空格被打上新方块的**相对权重**。
     //
@@ -425,7 +450,7 @@ class Searcher {
     // 归一化被剪掉的分支，否则期望值会被系统性压低。
     const float result = weight_sum > 0.0
                              ? static_cast<float>(static_cast<double>(total) / weight_sum)
-                             : Evaluate(board, config_.weights);
+                             : SearchEvaluate(config_, board);
 
     if (table_ != nullptr) {
       table_->Store(board, depth, kKindChance, result);

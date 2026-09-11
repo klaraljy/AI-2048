@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -65,7 +66,42 @@ struct Options {
   int train_eval_every = 25;
   int train_eval_games = 12;
   double train_lr = 0.002;
+  /**
+   * 训练线程数。0 = 用满硬件线程，1 = 单线程。
+   *
+   * **默认 1 是实测结论，不是保守。** 本机（Ryzen 5 5500U，6 核 12 线程）
+   * 跑纯浮点负载的并行扩展性：
+   *
+   *     线程数  1      2      4      6      8      12
+   *     耗时    94.6   104.7  162.6  209.9  244.2  253.2  ms
+   *
+   * **线程越多越慢**，12 线程比单线程慢 2.7 倍。高优先级重测结果相同，
+   * 所以不是被别的进程挤掉，而是这台笔记本的功耗/频率管理：
+   * 单核能冲高频，多核并发立刻掉到基频；SMT 那 6 个逻辑核还要跟物理核
+   * 抢执行单元。实测 12 线程训练只快 1.05 倍（噪声级别）。
+   *
+   * 并行代码留着（它是对的，见 TrainConfig::threads 的确定性说明，
+   * 已用权重哈希验证过任意线程数逐位一致），但默认关掉 ——
+   * 在拿到"目标机器上并行确实更快"的测量之前，不该让默认值假装有收益。
+   */
+  int train_threads = 1;
+  /** n-step 回报步数，1 = TD(0)。见 TrainConfig::nstep。 */
+  int train_nstep = 1;
+  /** ε 衰减到 epsilon_end 所需的局数（0 = 按总局数线性衰减的旧行为）。 */
+  int train_decay_games = 300000;
+  /** 折扣 γ。 */
+  double train_discount = 0.98;
+  /** 每批收集的局数（见 TrainConfig::batch_games）。 */
+  int train_batch = 512;
   std::string out_path;
+  /**
+   * 已训练权重的路径。这是"用学习出来的评估替代手写启发式"的开关。
+   *
+   * 为空 = 手写启发式（历史行为，所有既有基准都是那个配置下测的）。
+   */
+  std::string net_file;
+  /** 网络布局：rows / mixed（默认）/ six1 / six2 / six4。 */
+  std::string net_layout = "mixed";
   ai2048::Weights weight_overrides;
 };
 
@@ -134,6 +170,22 @@ struct Options {
       if (!take_int(&options->train_eval_every)) return false;
     } else if (arg == "--eval-games") {
       if (!take_int(&options->train_eval_games)) return false;
+    } else if (arg == "--threads") {
+      if (!take_int(&options->train_threads)) return false;
+    } else if (arg == "--batch") {
+      if (!take_int(&options->train_batch)) return false;
+    } else if (arg == "--nstep") {
+      if (!take_int(&options->train_nstep)) return false;
+    } else if (arg == "--decay-games") {
+      if (!take_int(&options->train_decay_games)) return false;
+    } else if (arg == "--discount") {
+      std::string raw;
+      if (!take(&raw)) return false;
+      try {
+        options->train_discount = std::stod(raw);
+      } catch (...) {
+        return false;
+      }
     } else if (arg == "--lr") {
       std::string raw;
       if (!take(&raw)) return false;
@@ -144,6 +196,10 @@ struct Options {
       }
     } else if (arg == "--out") {
       if (!take(&options->out_path)) return false;
+    } else if (arg == "--net-file") {
+      if (!take(&options->net_file)) return false;
+    } else if (arg == "--net") {
+      if (!take(&options->net_layout)) return false;
     } else if (arg == "--symmetry") {
       options->symmetry_keys = true;
     } else if (arg == "--difficulty") {
@@ -241,6 +297,62 @@ struct Options {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// 学习评估的接入
+//
+// 训练出来的 n-tuple 网络通过 search.h 的 leaf_evaluator 函数指针接进搜索。
+// 用裸函数指针而不是让 core 直接引用 ValueNetwork，是为了不让
+// ai2048_core 反过来依赖 ai2048_train（那会成环，见 search.h 的说明）。
+// ---------------------------------------------------------------------------
+
+/**
+ * search.h 的回调适配器。
+ *
+ * ⚠️ **必须乘回 kScoreScale。** 网络预测的是归一化分（分/1000，量级 0~50），
+ * 而搜索内部的评价值与手写启发式同量纲（原始分，量级上万）。
+ * 不换算的话 consistency_bonus(40) / anti_oscillation_penalty(60) /
+ * direction_bias(16) 会从"细微调节"变成"绝对主导"，搜索行为直接坏掉。
+ * 这类 bug 不会崩、不会报错，只会让分数莫名其妙地掉 —— 所以写在这里强调。
+ */
+float EvaluateWithNetwork(void* context, std::uint64_t board, bool terminal) {
+  const auto* network = static_cast<const ai2048::learn::ValueNetwork*>(context);
+  return static_cast<float>(network->Evaluate(board, terminal) *
+                            ai2048::learn::ValueNetwork::kScoreScale);
+}
+
+/**
+ * 按 --net-file 加载权重。
+ *
+ * 返回 nullopt **只表示加载失败**，不表示"没配"。没配时返回 nullptr。
+ *
+ * 失败必须是**致命**的，不能静默回退到手写启发式 —— 那样用户以为在跑
+ * 学习评估、实际跑的是手写启发式，而两者分数差 7 倍。这类"看起来在跑、
+ * 其实换了实现"的静默降级，比直接报错危险得多。
+ */
+[[nodiscard]] std::optional<std::shared_ptr<ai2048::learn::ValueNetwork>> LoadNetwork(
+    const Options& options, std::string* error) {
+  if (options.net_file.empty()) return std::shared_ptr<ai2048::learn::ValueNetwork>{};
+
+  // 用**空**布局构造，让 Load 从文件里重建真正的 tuple 布局。
+  // 曾经这里预分配 MixedTuples()，那是纯浪费 —— Load 会整体覆盖 tuples_，
+  // 而六个布局的参数差距极大（mixed 约 3MB，six4 约 268MB），
+  // 预分配对 six4 是白扔 268MB 内存再丢掉。
+  auto network = std::make_shared<ai2048::learn::ValueNetwork>(std::vector<ai2048::learn::Tuple>{});
+  if (!network->Load(options.net_file, error)) {
+    return std::nullopt;
+  }
+  std::cout << "叶子评估   : 学习权重 " << options.net_file << "（" << network->tuple_count()
+            << " tuple，" << network->parameter_count() << " 参数）\n";
+  return network;
+}
+
+/** 把网络绑到搜索配置上。network 为空时保持手写启发式。 */
+void AttachNetwork(const std::shared_ptr<ai2048::learn::ValueNetwork>& network,
+                   SearchConfig* config) {
+  if (!network) return;
+  config->leaf_evaluator = &EvaluateWithNetwork;
+  config->leaf_evaluator_context = network.get();
+}
 [[nodiscard]] SearchConfig MakeSearchConfig(const Options& options) {
   SearchConfig config;
   config.base_depth = options.depth;
@@ -322,30 +434,63 @@ int RunTrain(const Options& options) {
   using ai2048::learn::TrainLog;
   using ai2048::learn::ValueNetwork;
 
-  // 单 4-tuple × 4 行 = 4 个 tuple，参数 4 × 65536 ≈ 26 万。
-  // 刻意小：C1 只要证明"梯度方向是对的"，不需要容量。
-  ValueNetwork network(ValueNetwork::RowTuples());
+  // 网络布局由 --net 选，默认用 C2 的混合 4-tuple。
+  // C1 的纯按行布局表达能力不足（只能学到约 2,300 分），保留它只为对照。
+  std::vector<ai2048::learn::Tuple> tuples;
+  if (options.net_layout == "rows") {
+    tuples = ValueNetwork::RowTuples();
+  } else if (options.net_layout == "six1") {
+    tuples = ValueNetwork::WithSixTuples(1);
+  } else if (options.net_layout == "six2") {
+    tuples = ValueNetwork::WithSixTuples(2);
+  } else if (options.net_layout == "six4") {
+    tuples = ValueNetwork::WithSixTuples(4);
+  } else {
+    tuples = ValueNetwork::MixedTuples();
+  }
+  ValueNetwork network(std::move(tuples));
 
   TrainConfig config;
   config.games = options.train_games;
   config.learning_rate = options.train_lr;
-  config.discount = 0.98;
+  config.discount = options.train_discount;
+  config.nstep = options.train_nstep;
+  config.epsilon_decay_games = options.train_decay_games;
   config.seed = options.seed != 0 ? options.seed : 12345;
   config.difficulty = options.difficulty == ai2048::Difficulty::kEasy   ? 0
                       : options.difficulty == ai2048::Difficulty::kHard ? 2
                                                                         : 1;
   config.eval_every = options.train_eval_every;
   config.eval_games = options.train_eval_games;
+  config.threads = options.train_threads;
+  config.batch_games = options.train_batch;
+
+  // 打印**实际**会用到的线程数，而不是命令行传的值：
+  // threads=0 的含义是"用满硬件线程"，报告成 0 会让人以为没并行。
+  const int active_threads =
+      config.threads > 0 ? config.threads
+                         : static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
 
   std::cout << "TD 学习训练（n-tuple 价值网络）\n";
-  std::cout << "  参数数量   : " << network.parameter_count() << "（" << network.tuple_count()
-            << " 个 4-tuple）\n";
+  std::cout << "  布局       : " << options.net_layout << "（" << network.tuple_count()
+            << " 个 tuple）\n";
+  std::cout << "  参数数量   : " << network.parameter_count() << "（约 "
+            << static_cast<int>(network.parameter_megabytes() + 0.5) << " MB）\n";
   std::cout << "  局数       : " << config.games << "\n";
   std::cout << "  学习率     : " << config.learning_rate << "，折扣 " << config.discount << "\n";
+  std::cout << "  TD 目标    : " << config.nstep << "-step 回报"
+            << (config.nstep == 1 ? "（TD(0)）" : "") << "\n";
   std::cout << "  评估频率   : 每 " << config.eval_every << " 局（" << config.eval_games
             << " 局贪心）\n";
   std::cout << "  策略       : ε-greedy 自对弈，ε " << config.epsilon_start << " → "
-            << config.epsilon_end << "\n";
+            << config.epsilon_end;
+  if (config.epsilon_decay_games > 0) {
+    std::cout << "（指数衰减，" << config.epsilon_decay_games << " 局到低位）\n";
+  } else {
+    std::cout << "（按总局数线性衰减）\n";
+  }
+  std::cout << "  并行       : " << active_threads << " 线程，每批 " << config.batch_games
+            << " 局（结果与单线程逐位一致）\n";
   std::cout << "\n";
   std::cout << "  局数    评估均分   评估最高   256    512   1024   训练均分\n";
   std::cout << "  ------  ---------  ---------  -----  -----  -----  ---------\n";
@@ -565,7 +710,15 @@ int RunBench(const Options& options) {
   std::atomic<std::size_t> next{0};
   std::atomic<int> completed{0};
 
-  const SearchConfig base_config = MakeSearchConfig(options);
+  SearchConfig base_config = MakeSearchConfig(options);
+  std::string net_error;
+  auto loaded = LoadNetwork(options, &net_error);
+  if (!loaded.has_value()) {
+    std::cerr << "加载权重失败：" << net_error << "\n";
+    return 1;
+  }
+  const std::shared_ptr<ai2048::learn::ValueNetwork> network = *loaded;
+  AttachNetwork(network, &base_config);
   const std::size_t table_capacity = MakeTableCapacity(options);
   const bool symmetry_keys = MakeUseSymmetryKeys(options);
   const auto started = std::chrono::steady_clock::now();
@@ -677,7 +830,15 @@ int RunBench(const Options& options) {
 // ---------------------------------------------------------------------------
 
 int RunPlay(const Options& options) {
-  const SearchConfig config = MakeSearchConfig(options);
+  SearchConfig config = MakeSearchConfig(options);
+  std::string net_error;
+  auto loaded = LoadNetwork(options, &net_error);
+  if (!loaded.has_value()) {
+    std::cerr << "加载权重失败：" << net_error << "\n";
+    return 1;
+  }
+  const std::shared_ptr<ai2048::learn::ValueNetwork> network = *loaded;
+  AttachNetwork(network, &config);
   Game game(options.seed);
   std::optional<Direction> last_move;
   ai2048::TranspositionTable table(MakeTableCapacity(options), MakeUseSymmetryKeys(options));
@@ -1011,6 +1172,7 @@ void PrintUsage() {
       << "  --depth N         基础搜索深度，默认 6（偶数更自然）\n"
       << "  --time N          每步时间预算（毫秒）。0 = 不限时（完全确定，可复现）\n"
       << "  --chance-limit N  chance 节点采样上限。0 = 枚举全部空格\n"
+      << "  --net-file F      用训练好的 n-tuple 权重做叶子评估（替代手写启发式）\n"
       << "  --no-tt           关闭置换表\n"
       << "  --symmetry        置换表用 8 重对称键（有正确性代价，见 search.h）\n"
       << "子命令:\n"
@@ -1020,7 +1182,12 @@ void PrintUsage() {
       << "  move      --stdin                            批量模式，每行 \"<16 个指数> <方向>\"\n"
       << "  trace     --seeds <文件> [--limit N]          每局输出一行状态，供前端规则对拍\n"
       << "  selfcheck --seeds <文件>                      同种子重跑两次，校验逐字节一致\n"
-      << "  bench     --seeds <文件> [--limit N] [--threads N] [--tag T]\n";
+      << "  bench     --seeds <文件> [--limit N] [--threads N] [--tag T]\n"
+      << "  train     [--net L] [--games N] [--lr F] [--nstep N] [--discount F]\n"
+      << "            [--eval-every N] [--eval-games N] [--threads N] [--batch N] [--out 文件]\n"
+      << "            TD 学习训练 n-tuple 价值网络。L 取 rows/mixed/six1/six2/six4\n"
+      << "            --nstep 是 n-step 回报步数（1 = TD(0)，3~5 通常更好）\n"
+      << "            --threads 默认 1；本机多线程反而更慢（见 main.cpp 的实测表）\n";
 }
 
 }  // namespace

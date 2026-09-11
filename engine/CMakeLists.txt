@@ -48,9 +48,6 @@ endfunction()
 # ---------------------------------------------------------------------------
 add_library(ai2048_core STATIC
   src/ai/evaluate.cpp
-  # n-tuple 价值网络 + TD 学习（"换评估函数"路线的实现，见 ai/learn/）
-  src/ai/learn/trainer.cpp
-  src/ai/learn/value_network.cpp
   src/ai/search.cpp
   src/core/board.cpp
   src/core/console.cpp
@@ -77,10 +74,43 @@ target_compile_definitions(ai2048_core
 ai2048_apply_project_flags(ai2048_core)
 
 # ---------------------------------------------------------------------------
-# 消费者②：命令行入口（跑批、自检）
+# n-tuple 价值网络 + TD 学习（"换评估函数"路线）
+#
+# **为什么单独一个库，而不是留在 ai2048_core 里**
+#
+# core 上面那条注释写着"不得依赖网络、文件系统或线程模型"，三个消费者共用它。
+# TD 训练的并行化需要 std::thread，塞进 core 就违反了那条约束。
+#
+# 拆开之后约束是**真的**成立，而不是靠一句注释撑着：
+#   - core    ：无线程、无文件系统，Android / 服务端 / CLI 都能用
+#   - train   ：有线程，**只有 CLI 的训练子命令链接它**
+# Android 与服务端不链接本库，所以它们不会因为训练代码而引入线程依赖。
+#
+# 注意：价值网络的**推断**（Evaluate）目前还没接进 search.cpp。
+# 接进去的时候它会被 core 用到，那时要把 value_network.cpp 移回 core
+# （它是无线程的纯查表），只把 trainer.cpp 留在这里。
+# ---------------------------------------------------------------------------
+add_library(ai2048_train STATIC
+  src/ai/learn/trainer.cpp
+  src/ai/learn/value_network.cpp
+)
+target_link_libraries(ai2048_train PUBLIC ai2048_core)
+
+# 线程支持：MinGW-w64 的 thread model 是 posix，链接需要显式带上。
+# find_package 会在各平台上挑对（Windows 上通常是空的，Linux 上是 -pthread）。
+find_package(Threads REQUIRED)
+target_link_libraries(ai2048_train PUBLIC Threads::Threads)
+
+ai2048_apply_project_flags(ai2048_train)
+
+# ---------------------------------------------------------------------------
+# 消费者②：命令行入口（跑批、自检、训练）
+#
+# 链接 ai2048_train 是**刻意的**：训练子命令需要线程，跑批/自检不需要。
+# ai2048_train 已经把 ai2048_core 传递过来（PUBLIC），所以不用重复链接。
 # ---------------------------------------------------------------------------
 add_executable(ai2048-cli src/cli/main.cpp)
-target_link_libraries(ai2048-cli PRIVATE ai2048_core)
+target_link_libraries(ai2048-cli PRIVATE ai2048_train)
 ai2048_apply_project_flags(ai2048-cli)
 
 # ---------------------------------------------------------------------------

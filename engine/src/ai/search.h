@@ -125,6 +125,27 @@ struct SearchConfig {
 
   Weights weights;
 
+  // 学习出来的叶子评估（可选）。为空时用上面的手写 weights。
+  //
+  // ## 为什么用裸函数指针 + void*，而不是 std::function 或直接引用 ValueNetwork
+  //
+  // 直接引用 learn::ValueNetwork 会让 ai2048_core **反向依赖** ai2048_train，
+  // 而 train 是依赖 core 的 —— 成环。裸函数指针把依赖留在调用方
+  // （CLI 负责把网络绑上去），core 完全不知道网络的存在。
+  //
+  // ## ⚠️ 单位必须与 weights 同尺度
+  //
+  // search 内部的评价值与手写启发式在同一量纲上（原始分的量级，上万），
+  // 而 n-tuple 网络输出的是**归一化分**（分/1000，量级 0~50）。
+  // 直接接上不会报错，但 consistency_bonus / anti_oscillation_penalty /
+  // direction_bias 这些几十量级的调节项会瞬间变成主导项，搜索行为会坏掉。
+  // 所以适配器要乘回 kScoreScale —— 见 cli/main.cpp 的 MakeNetworkEvaluator。
+  //
+  // 另外请注意：置换表的内容现在取决于 leaf_evaluator，**换评估函数必须
+  // Reset 表**，理由与"换难度必须 Reset"相同（表里存的是旧评估算出的值）。
+  float (*leaf_evaluator)(void* context, std::uint64_t board, bool terminal) = nullptr;
+  void* leaf_evaluator_context = nullptr;
+
   // 根节点上的方向偏好：抑制来回摆动。
   float consistency_bonus = 40.0F;
   float anti_oscillation_penalty = 60.0F;
