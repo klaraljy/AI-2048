@@ -63,27 +63,73 @@ benchmarks\           基准种子集（可复现性资产，纳入版本管理�
 docs\                 简报、协议定义、实验记录
 ```
 
+## 快速开始（桌面）
+
+**双击 `start-ai2048.bat`**，或者用桌面上的 **AI-2048** 图标。
+
+首次使用想装桌面图标的话：
+
+```powershell
+# 生成图标（已提交，一般不用重跑）
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-icon.ps1
+
+# 在桌面创建带图标的快捷方式
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\install-shortcut.ps1
+```
+
+图标是 2×2 的 `2/0/4/8`，用游戏里 **32 号方块**的橙底白字（`#fe8b54` / `#fefcf7`）。
+`.ico` 含 256/128/64/48/32/16 六个尺寸。
+
+> **为什么需要快捷方式**：Windows 不能给 `.bat` 指定自定义图标 ——
+> `.bat` 的图标来自文件类型，没有逐文件的图标位。只有 `.lnk` / `.exe` 能带图标。
+
 ## 构建与运行
 
-> ⚠️ 以下命令是**目标形态**，尚未跑通 —— 代码还不存在。
-> `CMake` 与 `clang-format` 不在 PATH，需要先用绝对路径或加 PATH。
-
 ```sh
-# 一次性：让 CMake 与 clang-format 可用
+# 一次性：让 CMake 与 clang-format 可用（都不在 PATH）
 $env:PATH = "D:\Codex Tools\CMake\cmake-3.31.6-windows-x86_64\bin;D:\Codex Tools\clang-format18\clang_format\data\bin;$env:PATH"
 
 # 构建
 cmake -S engine -B engine\build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build engine\build
 
+# 单元测试（98 个）
+cmake -S engine -B engine\build-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DAI2048_BUILD_TESTS=ON
+cmake --build engine\build-tests
+ctest --test-dir engine\build-tests
+
+# 前端与端到端测试（10 个套件）
+node tests\run-all.mjs
+
 # 引擎自检：同种子同结果
 engine\build\ai2048-cli.exe selfcheck --seeds benchmarks\seeds-v1.txt
 
-# 起服务，然后打开 web\index.html
+# 跑一批基线
+engine\build\ai2048-cli.exe bench --seeds benchmarks\seeds-v1.txt --depth 6 --tag my-run
+
+# 起服务（前端会连它做 AI 决策）
 engine\build\ai2048-server.exe --port 8765
 ```
 
+> ⚠️ **改完代码要重建 `engine\build`** —— 启动器硬编码用那个目录的 exe，
+> 只重建 `build-dev` 的话启动器跑的还是旧版本，而且日志表面看不出来。
+> 详见 `AGENTS.md` 的「三个构建目录」。
+
 完整的验证命令与前端手工验收清单见 `AGENTS.md`。
+
+## 安卓
+
+Android 侧已能产出可安装的 debug APK（WebView 套 `web/`，离线可玩）：
+
+```powershell
+$env:GRADLE_USER_HOME = "D:\Codex Tools\gradle-home"
+$env:JAVA_HOME        = "D:\Codex Tools\jdk-21"
+$env:ANDROID_HOME     = "D:\Codex Tools\Android"
+gradle -p android assembleDebug
+```
+
+产物在 `android\app\build\outputs\apk\debug\app-debug.apk`。
+改完 `web/` 必须同步到 `android/app/src/main/assets/web/`（命令见 `android/README.md`）。
 
 ## 开发环境
 
