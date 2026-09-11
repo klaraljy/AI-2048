@@ -38,19 +38,12 @@
       <div class="toolbar">
         <label class="option">
           <span class="option-label">AI 强度</span>
-          <select id="strength">
-            <option value="beginner">入门 · 看 2 步</option>
-            <option value="standard" selected>标准 · 看 3 步</option>
-            <option value="expert">最强 · 看 4 步</option>
-          </select>
+          <!-- 选项由 config.js 生成，避免参数在 HTML 与 JS 里各写一份而漂移 -->
+          <select id="strength"></select>
         </label>
         <label class="option">
           <span class="option-label">AI 速度</span>
-          <select id="speed">
-            <option value="slow">慢 · 看它怎么想</option>
-            <option value="medium" selected>中 · 正常观看</option>
-            <option value="fast">快 · 快速测试</option>
-          </select>
+          <select id="speed"></select>
         </label>
       </div>
 

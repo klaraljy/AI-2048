@@ -14,10 +14,34 @@ import { Renderer } from './renderer.js';
 import { Input, DIRECTION } from './input.js';
 import { Sound } from './sound.js';
 import { createTransport } from './transport.js';
-import { SPEED, specFor, toEngineConfig, requestTimeoutMs } from './config.js';
+import {
+  SPEED,
+  strengthOptions,
+  speedOptions,
+  specFor,
+  toEngineConfig,
+  requestTimeoutMs,
+} from './config.js';
 
 const BEST_KEY = 'ai2048.best';
 const ENGINE_URL = readEngineUrl();
+
+/**
+ * 用 config.js 的定义填充下拉框。
+ *
+ * 选项**不在 HTML 里写死** —— 否则参数字典就有两份（HTML 一份、config.js 一份），
+ * 改了 JS 忘了 HTML 时，界面显示的和实际生效的会不一致，而且没有任何报错。
+ */
+function fillSelect(select, options, defaultValue) {
+  select.innerHTML = '';
+  for (const option of options) {
+    const node = document.createElement('option');
+    node.value = option.value;
+    node.textContent = option.note ? `${option.label}（${option.note}）` : option.label;
+    if (option.value === defaultValue) node.selected = true;
+    select.appendChild(node);
+  }
+}
 
 const el = {
   board: document.getElementById('board'),
@@ -297,6 +321,9 @@ function showNotice(text) {
 async function boot() {
   el.mute.textContent = sound.muted ? '音效关' : '音效开';
   el.mute.setAttribute('aria-pressed', sound.muted ? 'true' : 'false');
+
+  fillSelect(el.strength, strengthOptions(), 'standard');
+  fillSelect(el.speed, speedOptions(), 'medium');
 
   const requestTimeout = requestTimeoutMs(currentStrength());
   const result = await createTransport({ engineUrl: ENGINE_URL, requestTimeoutMs: requestTimeout });

@@ -14,6 +14,14 @@
  * 搜索深度按**层**计（max 层与 chance 层交替），所以：
  *   depth 8 = 向前看 4 步
  * 界面上一律换算成"步"，避免"深度 8"被理解成 8 步。
+ *
+ * 参数依据（seeds-v1.txt 各 100 局实测）：
+ *   d4 → 34,934 分，2048 达 80%，每局 1.5 s   （d6 的 1/4 耗时换 98% 的分数）
+ *   d6 → 35,658 分，2048 达 79%，每局 6.1 s   （相对 d4 只 +2%，几乎白花）
+ *   d8 → 46,851 分，2048 达 92%，每局 ~8 s    （真正的台阶）
+ *
+ * 所以界面必须**如实**标注：中间档不是"比入门强一截"，而是"多一点、
+ * 慢很多"。把三档说成等距提升是在骗用户，他会以为调中间档能明显变强。
  */
 export const STRENGTH = {
   beginner: { label: '入门', depth: 4, budgetMs: 300 },
@@ -26,10 +34,23 @@ export function stepsAhead(depth) {
   return Math.round(depth / 2);
 }
 
+/**
+ * 每档强度的"看几步"，只用于显示。
+ *
+ * note 是实测备注，直接显示在界面上 —— 用户有权知道中间档其实是"性价比最差"的：
+ * 花 4 倍时间只多 2% 分数。不说的话他会以为"标准"比"入门"强一截。
+ */
+const NOTES = {
+  beginner: '最快，分数已接近标准档',
+  standard: '比入门略强，但慢很多',
+  expert: '明显更强，也最慢',
+};
+
 export function strengthOptions() {
   return Object.entries(STRENGTH).map(([value, spec]) => ({
     value,
     label: `${spec.label} · 看 ${stepsAhead(spec.depth)} 步`,
+    note: NOTES[value],
     spec,
   }));
 }
