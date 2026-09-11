@@ -19,6 +19,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const SUITES = [
   ['规则一致性（与 C++ 引擎穷举对拍）', 'parity.test.mjs'],
+  // 生成规则必须是标准 2048：在所有空格中等概率，不得偏向角落。
+  // 参考实现的「简单难度」就是靠 70% 概率塞角落来放水的，本项目不做。
+  ['新方块生成分布（防角落偏好）', 'spawn.test.mjs'],
   ['JSON 解析器（与 JSON.parse 对拍）', 'json-parity.test.mjs'],
   ['渲染与动画（headless）', 'renderer.test.mjs'],
   ['输入与输入锁', 'input.test.mjs'],
