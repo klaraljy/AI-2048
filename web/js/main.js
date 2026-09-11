@@ -14,6 +14,7 @@ import { Renderer } from './renderer.js';
 import { Input, DIRECTION } from './input.js';
 import { Sound } from './sound.js';
 import { createTransport } from './transport.js';
+import { SPEED, specFor, toEngineConfig, requestTimeoutMs } from './config.js';
 
 const BEST_KEY = 'ai2048.best';
 const ENGINE_URL = readEngineUrl();
@@ -26,6 +27,8 @@ const el = {
   best: document.getElementById('best'),
   seed: document.getElementById('seed'),
   seedShown: document.getElementById('seed-shown'),
+  strength: document.getElementById('strength'),
+  speed: document.getElementById('speed'),
   newGame: document.getElementById('new-game'),
   undo: document.getElementById('undo'),
   aiStep: document.getElementById('ai-step'),
@@ -87,6 +90,36 @@ let autoRunning = false;
 let autoTimer = null;
 let lastMove = null;
 
+/** 当前 AI 强度规格，来源是下拉框，参数定义在 config.js。 */
+function currentStrength() {
+  return specFor(el.strength ? el.strength.value : 'standard');
+}
+
+/** 自动演示两步之间的间隔（速度档）。 */
+function currentInterval() {
+  const spec = SPEED[el.speed ? el.speed.value : 'medium'];
+  return spec ? spec.intervalMs : SPEED.medium.intervalMs;
+}
+
+/**
+ * 把当前强度告诉引擎，并同步前端的等待超时。
+ *
+ * 两件事必须一起做：只改引擎不改超时，或反之，都会表现成"引擎响应超时"。
+ * 失败不抛给用户 —— 引擎不可用时本来就会走降级路径并已在页面上提示。
+ */
+async function applyStrength() {
+  const spec = currentStrength();
+  if (transport && typeof transport.setRequestTimeout === 'function') {
+    transport.setRequestTimeout(requestTimeoutMs(spec));
+  }
+  if (!transport || transportDegraded || typeof transport.configure !== 'function') return;
+  try {
+    await transport.configure(toEngineConfig(spec));
+  } catch {
+    // 引擎中途断了之类：不打断玩，下一步会走 transport 自己的错误路径
+  }
+}
+
 const input = new Input({
   boardElement: el.board,
   onMove: (direction) => void performMove(direction),
@@ -96,6 +129,7 @@ const input = new Input({
   onRestart: () => newGame(),
   onUndo: () => void doUndo(),
   onToggleMute: () => toggleMute(),
+  onAiStep: () => void aiStep(),
 });
 
 /** 刷新按钮的可用状态。输入锁本身由 isLocked 回调派生，不需要在这里同步。 */
@@ -212,7 +246,7 @@ function startAuto() {
       stopAuto();
       return;
     }
-    autoTimer = setTimeout(loop, 60);
+    autoTimer = setTimeout(loop, currentInterval());
   };
   void loop();
 }
@@ -264,7 +298,8 @@ async function boot() {
   el.mute.textContent = sound.muted ? '音效关' : '音效开';
   el.mute.setAttribute('aria-pressed', sound.muted ? 'true' : 'false');
 
-  const result = await createTransport({ engineUrl: ENGINE_URL });
+  const requestTimeout = requestTimeoutMs(currentStrength());
+  const result = await createTransport({ engineUrl: ENGINE_URL, requestTimeoutMs: requestTimeout });
   transport = result.transport;
   transportDegraded = result.degraded;
 
@@ -274,6 +309,10 @@ async function boot() {
   } else {
     el.notice.classList.add('hidden');
   }
+
+  // 连上之后立刻把当前强度告诉引擎。不告诉的话引擎会用它启动时的默认值，
+  // 界面上写着"入门·看 2 步"而实际跑的是深度 8 —— 参数与实际不符比没有参数更糟。
+  await applyStrength();
 
   newGame();
 
@@ -285,6 +324,9 @@ async function boot() {
   el.overlayRestart.addEventListener('click', () => newGame());
   el.overlayUndo.addEventListener('click', () => void doUndo());
   el.seed.addEventListener('change', () => newGame());
+  el.strength.addEventListener('change', () => void applyStrength());
+  // 速度只影响下一步之后的间隔，不需要打断正在进行的演示
+  el.speed.addEventListener('change', () => {});
 
   window.addEventListener('resize', () => renderer.relayout());
   window.addEventListener('orientationchange', () => setTimeout(() => renderer.relayout(), 120));

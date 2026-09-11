@@ -118,16 +118,28 @@ export class WebSocketTransport {
   /**
    * @param {string} url 形如 ws://127.0.0.1:8765
    * @param {number} [timeoutMs] 连接超时
+   * @param {number} [requestTimeoutMs] 等引擎回包的超时，随 AI 强度变化
    */
-  constructor(url, timeoutMs = 1500) {
+  constructor(url, timeoutMs = 1500, requestTimeoutMs = 5000) {
     this.url = url;
     this.timeoutMs = timeoutMs;
+    this.requestTimeoutMs = requestTimeoutMs;
     this.name = 'websocket';
     this.description = `C++ 引擎（${url}）`;
     this.socket = null;
     this.nextId = 1;
     this.pending = new Map();
     this.lastDebugInfo = null;
+  }
+
+  /**
+   * 调整等回包的超时。
+   *
+   * 必须大于引擎自己的时间预算 —— 见 web/js/config.js 的 requestTimeoutMs()。
+   * 前端先超时的话，每次请求都报"引擎响应超时"，看起来像引擎坏了。
+   */
+  setRequestTimeout(ms) {
+    if (Number.isFinite(ms) && ms > 0) this.requestTimeoutMs = ms;
   }
 
   connect() {
@@ -211,7 +223,7 @@ export class WebSocketTransport {
         if (!this.pending.has(id)) return;
         this.pending.delete(id);
         reject(new Error('引擎响应超时'));
-      }, 5000);
+      }, this.requestTimeoutMs);
 
       this.pending.set(id, {
         resolve: (value) => {
@@ -267,9 +279,10 @@ export class WebSocketTransport {
  *
  * @param {object} [options]
  * @param {string|null} [options.engineUrl] 引擎地址；null 表示不用引擎
+ * @param {number} [options.requestTimeoutMs] 等引擎回包的超时（随 AI 强度变化）
  * @returns {Promise<{transport: object, degraded: boolean, reason: string|null}>}
  */
-export async function createTransport({ engineUrl = null } = {}) {
+export async function createTransport({ engineUrl = null, requestTimeoutMs } = {}) {
   if (!engineUrl) {
     return {
       transport: new LocalTransport(),
@@ -278,7 +291,7 @@ export async function createTransport({ engineUrl = null } = {}) {
     };
   }
 
-  const remote = new WebSocketTransport(engineUrl);
+  const remote = new WebSocketTransport(engineUrl, 1500, requestTimeoutMs);
   try {
     await remote.connect();
     return { transport: remote, degraded: false, reason: null };

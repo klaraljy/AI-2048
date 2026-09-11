@@ -23,6 +23,8 @@ const SUITES = [
   ['渲染与动画（headless）', 'renderer.test.mjs'],
   ['输入与输入锁', 'input.test.mjs'],
   ['降级路径（无 WebAudio / 连不上引擎）', 'degraded.test.mjs'],
+  // AI 强度/速度的契约：界面承诺「看 2 步」就必须真的搜 2 步
+  ['AI 强度与速度档位（含引擎实测）', 'config.test.mjs'],
   // 放最后：这两套会真的起引擎进程（server 还会起静态服务器），
   // 需要先构建好；也是最慢的两套。
   ['WebSocket 服务端（真实进程端到端）', 'server.test.mjs'],

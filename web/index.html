@@ -37,18 +37,42 @@
 
       <div class="toolbar">
         <label class="option">
-          种子
+          <span class="option-label">AI 强度</span>
+          <select id="strength">
+            <option value="beginner">入门 · 看 2 步</option>
+            <option value="standard" selected>标准 · 看 3 步</option>
+            <option value="expert">最强 · 看 4 步</option>
+          </select>
+        </label>
+        <label class="option">
+          <span class="option-label">AI 速度</span>
+          <select id="speed">
+            <option value="slow">慢 · 看它怎么想</option>
+            <option value="medium" selected>中 · 正常观看</option>
+            <option value="fast">快 · 快速测试</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="toolbar">
+        <label class="option">
+          <span class="option-label">开局</span>
           <select id="seed">
             <option value="random">随机</option>
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="42">42</option>
+            <option value="1">固定第 1 局</option>
+            <option value="2">固定第 2 局</option>
+            <option value="3">固定第 3 局</option>
+            <option value="42">固定第 4 局</option>
           </select>
         </label>
         <span class="spacer"></span>
         <span class="option" id="seed-shown">—</span>
       </div>
+
+      <p class="hint sub-hint">
+        「开局」决定新方块出现的顺序：选「固定」时每一局都一模一样，
+        方便公平比较不同强度 —— 同一局重开，只有 AI 变了。
+      </p>
 
       <div class="board-wrap" id="board">
         <div class="grid" id="grid"></div>
@@ -68,7 +92,8 @@
 
       <p class="hint">
         <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> 或 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
-        移动，手机上直接滑动。<kbd>R</kbd> 重开，<kbd>U</kbd> 撤销，<kbd>M</kbd> 静音。
+        移动，手机上直接滑动。<kbd>R</kbd> 重开，<kbd>U</kbd> 撤销，<kbd>M</kbd> 静音，
+        <kbd>空格</kbd> 让 AI 走一步。
       </p>
     </div>
 

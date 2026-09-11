@@ -50,8 +50,18 @@ export class Input {
    * @param {() => void} [options.onRestart] R 键重开
    * @param {() => void} [options.onUndo] U 键 / Backspace 撤销
    * @param {() => void} [options.onToggleMute] M 键静音
+   * @param {() => void} [options.onAiStep] 空格让 AI 走一步
    */
-  constructor({ boardElement, onMove, isLocked, onUnlock, onRestart, onUndo, onToggleMute }) {
+  constructor({
+    boardElement,
+    onMove,
+    isLocked,
+    onUnlock,
+    onRestart,
+    onUndo,
+    onToggleMute,
+    onAiStep,
+  }) {
     this.boardElement = boardElement;
     this.onMove = onMove;
     this.isLocked = isLocked || (() => false);
@@ -59,6 +69,7 @@ export class Input {
     this.onRestart = onRestart;
     this.onUndo = onUndo;
     this.onToggleMute = onToggleMute;
+    this.onAiStep = onAiStep;
 
     this._pointerId = null;
     this._startX = 0;
@@ -108,6 +119,14 @@ export class Input {
       if (event.key === 'm' || event.key === 'M') {
         event.preventDefault();
         if (this.onToggleMute) this.onToggleMute();
+        return;
+      }
+      // 空格 = 让 AI 走一步。
+      // 用 event.code 判断而不是 event.key：空格键的 key 值是 ' '，
+      // 不同输入法/键盘布局下更容易出岔子，code 稳定得多。
+      if (event.code === 'Space' || event.key === ' ') {
+        event.preventDefault();
+        if (this.onAiStep) this.onAiStep();
       }
     });
 

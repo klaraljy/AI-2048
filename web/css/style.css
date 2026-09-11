@@ -456,6 +456,20 @@ select {
   line-height: 1.6;
 }
 
+/* 紧跟在控件下面的说明：比 .hint 更轻，且上边距小，视觉上属于上面那组控件 */
+.sub-hint {
+  margin-top: -4px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: #a99c90;
+}
+
+/* 控件前的小标签：让「AI 强度」「AI 速度」在视觉上对齐，
+   否则下拉框宽度不同时会显得参差 */
+.option-label {
+  white-space: nowrap;
+}
+
 kbd {
   display: inline-block;
   padding: 1px 6px;
