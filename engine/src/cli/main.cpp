@@ -56,6 +56,8 @@ struct Options {
   // 难度改变新方块的**位置分布**，因此改变规则。默认 normal = 标准 2048。
   // 跑批结果必须带难度标记：分数不跨难度可比。
   ai2048::Difficulty difficulty = ai2048::Difficulty::kNormal;
+  // 置换表条目数；0 表示用默认容量。用于对照"表越大是否越好"。
+  int tt_entries = 0;
   ai2048::Weights weight_overrides;
 };
 
@@ -116,6 +118,8 @@ struct Options {
       if (!take_int(&options->chance_limit)) return false;
     } else if (arg == "--no-tt") {
       options->use_tt = false;
+    } else if (arg == "--tt-entries") {
+      if (!take_int(&options->tt_entries)) return false;
     } else if (arg == "--symmetry") {
       options->symmetry_keys = true;
     } else if (arg == "--difficulty") {
@@ -230,7 +234,11 @@ struct Options {
 // 早期实现每步新建一张 16MB 的表，单局 939 步白花 8.8 秒，
 // 而搜索本身只要 0.15 秒。详见 search.h 里 TranspositionTable 的说明。
 [[nodiscard]] std::size_t MakeTableCapacity(const Options& options) {
-  return options.use_tt ? ai2048::TranspositionTable::kDefaultCapacity : 0;
+  if (!options.use_tt) return 0;
+  if (options.tt_entries > 0) {
+    return static_cast<std::size_t>(options.tt_entries);
+  }
+  return ai2048::TranspositionTable::kDefaultCapacity;
 }
 
 [[nodiscard]] bool MakeUseSymmetryKeys(const Options& options) {

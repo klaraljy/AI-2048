@@ -27,6 +27,7 @@ import {
   isStandardDifficulty,
   DIFFICULTY,
   DEFAULT_DIFFICULTY,
+  DEFAULT_STRENGTH,
 } from './config.js';
 
 const BEST_KEY = 'ai2048.best';
@@ -441,7 +442,8 @@ async function boot() {
   updateMuteIcon(sound.muted);
 
   if (el.difficulty) fillSelect(el.difficulty, difficultyOptions(), DEFAULT_DIFFICULTY);
-  fillSelect(el.strength, strengthOptions(), 'standard');
+  // 默认强度与难度都取最高档（用户要求：默认最难 + 最强）
+  fillSelect(el.strength, strengthOptions(), DEFAULT_STRENGTH);
   fillSelect(el.speed, speedOptions(), 'medium');
 
   const requestTimeout = requestTimeoutMs(currentStrength());

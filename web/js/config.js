@@ -137,10 +137,19 @@ export const DIFFICULTY = {
 };
 
 /**
- * 默认难度 = 标准 2048。**不得改动** ——
- * 所有历史分数与公开基准都是在标准规则下取得的。
+ * 默认难度 = **困难**，默认强度 = **最强**。
+ *
+ * 用户明确要求："默认最难加最强，我测试一直是这个，我肯定也会一直玩最难档，
+ * 看看我与 AI 算法的差距"。所以界面一打开就是最难的组合。
+ *
+ * ⚠️ 困难档**不是标准 2048**（改变了新方块的落点分布），
+ * 所以分数不可与公开基准或历史标准档成绩比较 —— 界面上有常驻提示。
+ * `DIFFICULTY_NORMAL` 仍是"标准规则"的标识，只是不再作为界面默认值。
  */
-export const DEFAULT_DIFFICULTY = DIFFICULTY_NORMAL;
+export const DEFAULT_DIFFICULTY = DIFFICULTY_HARD;
+
+/** 默认强度档位，见 STRENGTH。同样按用户要求取最强。 */
+export const DEFAULT_STRENGTH = 'expert';
 
 export function difficultyOptions() {
   return Object.entries(DIFFICULTY).map(([value, spec]) => ({
