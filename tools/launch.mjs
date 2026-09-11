@@ -34,6 +34,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -42,7 +43,47 @@ const ROOT = join(HERE, '..');
 const ENGINE_EXE = join(ROOT, 'engine', 'build', 'ai2048-server.exe');
 const WEB_PORT = Number(process.env.AI2048_PORT ?? 3000);
 const ENGINE_PORT = Number(process.env.AI2048_ENGINE_PORT ?? 8765);
-const ENGINE_URL = `ws://127.0.0.1:${ENGINE_PORT}`;
+
+/** 连续被占时最多往上试几个端口。 */
+const PORT_PROBE_LIMIT = 20;
+
+/**
+ * 找一个能用的端口，从 `start` 开始往上试。
+ *
+ * 为什么需要它（真实踩过两次）：原先写死了端口，一旦被占整个启动就失败，
+ * 用户看到的是「端口 3000 已被占用。换个端口：--port 3001」，
+ * 而双击快捷方式的人根本没法传参数 —— 等于打不开。
+ * 罪魁祸首往往是**上一次没退干净的自己**（引擎和静态服务器是子进程，
+ * 窗口被强杀时不一定能收走）。
+ *
+ * @returns 可用的端口；全部被占则返回 null
+ */
+function findFreePort(start) {
+  return new Promise((resolve) => {
+    let candidate = start;
+    let attempts = 0;
+
+    const tryNext = () => {
+      if (attempts >= PORT_PROBE_LIMIT) {
+        resolve(null);
+        return;
+      }
+      attempts += 1;
+      const probe = createServer();
+      probe.once('error', () => {
+        // EADDRINUSE（或其它占用）：换下一个
+        candidate += 1;
+        tryNext();
+      });
+      probe.once('listening', () => {
+        probe.close(() => resolve(candidate));
+      });
+      probe.listen(candidate, '127.0.0.1');
+    };
+
+    tryNext();
+  });
+}
 
 function fail(message, hint) {
   console.error('');
@@ -70,7 +111,7 @@ function killStaleEngines() {
   spawnSync('powershell', ['-NoProfile', '-Command', script], { stdio: 'ignore' });
 }
 
-function main() {
+async function main() {
   console.log('');
   console.log('  ==========================================');
   console.log('   AI-2048  -  启动中');
@@ -88,6 +129,32 @@ function main() {
 
   killStaleEngines();
 
+  // 选端口：从配置的端口往上找空闲的。
+  //
+  // 引擎端口与前端端口分别探测。引擎端口被占通常意味着**上一次的引擎
+  // 还活着**（killStaleEngines 只按可执行文件路径清理，如果它卡住或路径
+  // 对不上就会漏），前端端口被占则多半是上次的静态服务器没收干净。
+  // 与其让用户看到一句他没法照做的「换个端口」，不如自己让开。
+  const enginePort = await findFreePort(ENGINE_PORT);
+  if (enginePort === null) {
+    fail(`端口 ${ENGINE_PORT} 起连续 ${PORT_PROBE_LIMIT} 个都被占用，无法启动。`);
+    return;
+  }
+  if (enginePort !== ENGINE_PORT) {
+    console.log(`  端口 ${ENGINE_PORT} 被占，引擎改用 ${enginePort}`);
+  }
+
+  const webPort = await findFreePort(WEB_PORT);
+  if (webPort === null) {
+    fail(`端口 ${WEB_PORT} 起连续 ${PORT_PROBE_LIMIT} 个都被占用，无法启动。`);
+    return;
+  }
+  if (webPort !== WEB_PORT) {
+    console.log(`  端口 ${WEB_PORT} 被占，前端改用 ${webPort}`);
+  }
+
+  const engineUrl = `ws://127.0.0.1:${enginePort}`;
+
   // 可选：用训练好的 n-tuple 权重做叶子评估。
   //
   // 设了 AI2048_NET=<权重路径> 才启用，默认不设 —— 也就是默认仍是手写启发式，
@@ -97,7 +164,7 @@ function main() {
   //
   // 权重文件是 `ai2048-cli train --out <路径>` 的产物。仓库不收录（体积 +
   // 可再生成），所以路径由使用者自己给。
-  const engineArgs = ['--port', String(ENGINE_PORT)];
+  const engineArgs = ['--port', String(enginePort)];
   const netFile = process.env.AI2048_NET;
   if (netFile && netFile.trim() !== '') {
     engineArgs.push('--net-file', netFile.trim());
@@ -124,9 +191,9 @@ function main() {
     [
       join(HERE, 'static-server.mjs'),
       '--port',
-      String(WEB_PORT),
+      String(webPort),
       '--engine',
-      ENGINE_URL,
+      engineUrl,
       '--open',
     ],
     { cwd: ROOT, stdio: 'inherit' }
@@ -155,4 +222,6 @@ function main() {
   process.on('SIGTERM', () => shutdown(0));
 }
 
-main();
+main().catch((error) => {
+  fail(String(error && error.stack ? error.stack : error));
+});
