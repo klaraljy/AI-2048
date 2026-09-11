@@ -75,6 +75,20 @@ struct Weights {
   // 之后，这一项成了本项目**最大的一个杠杆**：34,934 → 42,792（+22.5%）。
   float snake = 15.0F;
 
+  // 位置排名蛇形分：沿蛇形路径的**指数衰减**位置权重（见 evaluate.cpp 的
+  // SnakeRankScore）。
+  //
+  // 与上面的 snake 是两件事，不要混：
+  //   snake       = 1..16 **线性**权重 × 牌的**数值** —— 只惩罚"大牌不在路径上"
+  //   snake_rank  = 0.5^rank **指数**权重 × 牌的**指数** —— 惩罚"大牌位置错误"
+  //
+  // 线性权重的区分度太弱：一张 1024 从路径头挪到尽头只差 15,360，
+  // 乘上 snake 的系数 0.015 后对总分影响约 230，相对上万的总分几乎无感。
+  //
+  // ⚠️ 默认 0：**新项一律先关着**，否则 42,792 那套历史基准全部不可比。
+  // 验证有效后才会给非零权重。
+  float snake_rank = 0.0F;
+
   // 最大牌本身的等级奖励，鼓励往高处走。
   //
   // ⚠️ 实测**关掉更好**（42,792 vs 41,719）：蛇形项已经内含了
@@ -128,6 +142,7 @@ struct EvaluationBreakdown {
   float merge = 0.0F;
   float corner = 0.0F;
   float snake = 0.0F;
+  float snake_rank = 0.0F;
   float max_tile = 0.0F;
   float corner_control = 0.0F;
   float edge_support = 0.0F;

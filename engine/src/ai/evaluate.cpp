@@ -231,6 +231,7 @@ struct RawTerms {
   float smoothness = 0.0F;
   float merge = 0.0F;
   float snake = 0.0F;
+  float snake_rank = 0.0F;
   int max_exponent = 0;
   bool max_in_corner = false;
   int max_row = 0;
@@ -238,6 +239,48 @@ struct RawTerms {
   float edge_support = 0.0F;
   float gradient = 0.0F;
 };
+
+/**
+ * 位置排名蛇形分：沿蛇形路径的**指数衰减**位置权重。
+ *
+ *     raw = Σ_cell  exponent[cell] × decay^rank[cell]
+ *     归一化：除以 16（格数），使其与其它"每格平均"量级的项可比
+ *
+ * rank 是格子沿蛇形路径的位置：0 = 锚点角（最优先），15 = 路径尽头。
+ *
+ * ## 与已有 snake 项的区别（这是它存在的理由）
+ *
+ * 已有的 `snake` 用的是 **1..16 线性权重 × 牌的数值**。线性权重的问题是
+ * **区分度太弱**：一张 1024 放在路径头是 1024×16，放在路径尽头是 1024×1，
+ * 差值 15,360 —— 而该项目在总分里的系数只有 0.015，折算下来影响约 230 分，
+ * 相对上万的总分几乎无感。所以它实际上只在惩罚"大牌完全不在路径上"。
+ *
+ * 指数权重才会真正惩罚**位置错误**：decay=0.5 时，同一张牌从路径头
+ * 挪到第 5 格，贡献从 1.0 掉到 0.03 —— 差 32 倍。
+ * 这才是"大牌必须待在角上、沿路径递减排开"的强约束。
+ *
+ * ## 为什么用指数而不是数值
+ *
+ * 与 gradient 项一致：数值会让量级失控（2048 与 1024 差 1024，
+ * 而指数只差 1），且大牌会压过所有其它项。用指数时每一项的量级
+ * 都在 0~15，权重系数才好定。
+ */
+[[nodiscard]] float SnakeRankScore(std::uint64_t board, const SnakeTemplate& snake_template) {
+  constexpr double kDecay = 0.5;  // rank 每靠后一格，权重减半
+  constexpr double kMaxWeight = 16.0;
+
+  double sum = 0.0;
+  for (int index = 0; index < kCellCount; ++index) {
+    const int exponent = GetExponent(board, index);
+    if (exponent == 0) continue;
+    // 模板权重 16..1 → rank 0..15
+    const int rank =
+        static_cast<int>(kMaxWeight) - snake_template.weights[static_cast<std::size_t>(index)];
+    sum += static_cast<double>(exponent) * std::pow(kDecay, rank);
+  }
+  // 除以格数：让它的量级与"每格平均"的项可比，权重系数才好解释。
+  return static_cast<float>(sum / static_cast<double>(kCellCount));
+}
 
 // 行内梯度：按位置递减加权求和。
 // 奖励"从左到右递减"的排布 —— 比单调性更细，因为它看落差出现在**哪里**。
@@ -297,6 +340,7 @@ struct RawTerms {
   }
   // 归一化到"每格平均"的量级，避免权重系数必须写得很小才不压过其它项。
   terms.snake = static_cast<float>(snake_sum / kSnakeWeightSum);
+  terms.snake_rank = SnakeRankScore(board, snake_template);
 
   terms.max_row = max_index / kBoardSize;
   terms.max_col = max_index % kBoardSize;
@@ -326,6 +370,7 @@ struct RawTerms {
   out.smoothness = terms.smoothness * weights.smoothness;
   out.merge = terms.merge * weights.merge;
   out.snake = terms.snake * weights.snake;
+  out.snake_rank = terms.snake_rank * weights.snake_rank;
   out.max_tile = static_cast<float>(terms.max_exponent) * weights.max_tile;
 
   // 最大牌在角上才给奖励，并按空格数缩放 —— 没有腾挪空间时，
@@ -364,7 +409,7 @@ struct RawTerms {
   out.gradient = terms.gradient * weights.gradient;
 
   out.total = out.empty + out.monotonicity + out.smoothness + out.merge + out.corner + out.snake +
-              out.max_tile + out.corner_control + out.edge_support + out.gradient;
+              out.snake_rank + out.max_tile + out.corner_control + out.edge_support + out.gradient;
   return out;
 }
 

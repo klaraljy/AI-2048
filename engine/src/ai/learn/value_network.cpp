@@ -20,9 +20,7 @@ constexpr char kMagic[8] = {'A', '2', '0', '4', '8', 'N', 'T', '2'};
 
 }  // namespace
 
-std::uint32_t Tuple::StateCount() const noexcept {
-  return length <= 0 ? 0 : Power16(length);
-}
+std::uint32_t Tuple::StateCount() const noexcept { return length <= 0 ? 0 : Power16(length); }
 
 std::uint32_t Tuple::Index(std::uint64_t board) const noexcept {
   // 每个格子 4 bit，按 cells 的顺序拼成下标。
@@ -148,9 +146,61 @@ std::vector<Tuple> ValueNetwork::WithSixTuples(int six_tuple_count) {
   return tuples;
 }
 
-void ValueNetwork::Reset() noexcept { std::memset(weights_.data(), 0, weights_.size() * sizeof(float)); }
+std::vector<Tuple> ValueNetwork::SerpentineTuples() {
+  // MixedTuples 的 12 个 + 4 个**蛇形折返** tuple。
+  //
+  // ## 为什么这个形状值得单独试
+  //
+  // 强 2048 的核心是蛇形：一路往一个方向排，到行尾**折返**往下一行接。
+  // 折返处的相邻关系是蛇形的关键，而它**横 tuple 和竖 tuple 都抓不到**：
+  //
+  //     0  1  2  3
+  //     4  5  6  7     折返发生在 3→7、4→0 这类位置上
+  //     8  9 10 11
+  //    12 13 14 15
+  //
+  // 横 tuple {0,1,2,3} 只看到 0-1-2-3；竖 tuple {3,7,11,15} 只看到 3-7。
+  // 而"3 紧挨着 7、且 7 就在第二行最右"这个**组合**，两者都表达不了。
+  //
+  // ## ⚠️ 必须与 MixedTuples 同规模，否则测不出结论
+  //
+  // 第一版用了长度 5/6 的前缀，参数从 78 万炸到 **7235 万**（276MB）——
+  // 那等于又在做"加容量"，而加容量已经被实测否掉了
+  // （mixed → six2：参数 ×44，分数只涨 1.3%）。
+  // 那样测出来的任何差异都分不清是"形状好"还是"容量大"。
+  //
+  // 所以这里**只用 4-tuple**：参数 16 × 65536 = 105 万（mixed 是 79 万），
+  // 规模接近，差异才能归因到形状本身。
+  //
+  // ## 为什么放在四个角
+  //
+  // 大牌最终会堆到某个角上，折返 tuple 放在角上比均匀铺开更有用。
+  // 每个都刻意包含**至少一对新的相邻关系**。
+  const std::vector<std::vector<int>> fold_patterns = {
+      // 左上角：竖向 0-4 与横向 5-6 同时出现（MixedTuples 里没有这种组合）
+      {0, 4, 5, 6},
+      // 右上角：横向 1-2-3 与竖向 3-6 同时出现
+      {1, 2, 3, 6},
+      // 左下角：横向 8-9 与竖向 9-13 同时出现
+      {8, 9, 12, 13},
+      // 右下角：横向 10-11 与竖向 11-15 同时出现
+      {10, 11, 14, 15},
+  };
 
-ValueNetwork::Trace ValueNetwork::EvaluateWithTrace(std::uint64_t board, bool terminal) const noexcept {
+  std::vector<Tuple> tuples = MixedTuples();
+  tuples.reserve(tuples.size() + fold_patterns.size());
+  for (const std::vector<int>& pattern : fold_patterns) {
+    tuples.push_back(MakeTuple(pattern));
+  }
+  return tuples;
+}
+
+void ValueNetwork::Reset() noexcept {
+  std::memset(weights_.data(), 0, weights_.size() * sizeof(float));
+}
+
+ValueNetwork::Trace ValueNetwork::EvaluateWithTrace(std::uint64_t board,
+                                                    bool terminal) const noexcept {
   Trace trace;
   // 终局：之后再也拿不到分，价值就是 0。**这是必须的信号** ——
   // 它让 TD 链知道"这条路的终点到了"，否则最后一步的价值会朝着

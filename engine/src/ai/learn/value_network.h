@@ -108,6 +108,18 @@ class ValueNetwork {
   [[nodiscard]] static std::vector<Tuple> WithSixTuples(int six_tuple_count);
 
   /**
+   * C2 布局 C：MixedTuples 再加 12 个**真蛇形前缀**（长度 4/5/6）。
+   *
+   * 与 WithSixTuples 的区别是它抓的是**换行处的相邻关系** ——
+   * 蛇形走到行尾折返时的那对格子，横 tuple 和竖 tuple 都看不到。
+   * 实测已证明"加大尺寸"（mixed → six2，参数 ×44）没有收益，
+   * 所以这里换的是**形状**，不是尺寸。
+   *
+   * 参数约 157 万，内存约 6MB —— 比 six2 的 131MB 小得多，训练也快得多。
+   */
+  [[nodiscard]] static std::vector<Tuple> SerpentineTuples();
+
+  /**
    * 一次评估的"痕迹"：价值 + 本次用到的权重下标。
    *
    * 训练时必须走带 trace 的路径 —— TD 更新要往这些下标上写，

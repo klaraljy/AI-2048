@@ -101,7 +101,7 @@ struct Options {
    * 为空 = 手写启发式（历史行为，所有既有基准都是那个配置下测的）。
    */
   std::string net_file;
-  /** 网络布局：rows / mixed（默认）/ six1 / six2 / six4。 */
+  /** 网络布局：rows / mixed（默认）/ six1 / six2 / six4 / serp。 */
   std::string net_layout = "mixed";
   ai2048::Weights weight_overrides;
 };
@@ -280,6 +280,9 @@ struct Options {
       weights->corner = value;
     } else if (key == "snake") {
       weights->snake = value;
+    } else if (key == "snakerank") {
+      // 位置排名蛇形分（指数衰减）。默认 0 = 关闭，见 evaluate.h 的说明。
+      weights->snake_rank = value;
     } else if (key == "maxtile") {
       weights->max_tile = value;
     } else if (key == "cc") {
@@ -381,6 +384,7 @@ int RunTrain(const Options& options) {
 
   // 网络布局由 --net 选，默认用 C2 的混合 4-tuple。
   // C1 的纯按行布局表达能力不足（只能学到约 2,300 分），保留它只为对照。
+  // serp 是 mixed + 真蛇形前缀（见 ValueNetwork::SerpentineTuples）。
   std::vector<ai2048::learn::Tuple> tuples;
   if (options.net_layout == "rows") {
     tuples = ValueNetwork::RowTuples();
@@ -390,6 +394,10 @@ int RunTrain(const Options& options) {
     tuples = ValueNetwork::WithSixTuples(2);
   } else if (options.net_layout == "six4") {
     tuples = ValueNetwork::WithSixTuples(4);
+  } else if (options.net_layout == "serp") {
+    // mixed + 12 个真蛇形前缀。抓的是**换行处的相邻关系** ——
+    // 那是横 tuple 和竖 tuple 都看不到的结构。见 SerpentineTuples 的说明。
+    tuples = ValueNetwork::SerpentineTuples();
   } else {
     tuples = ValueNetwork::MixedTuples();
   }
