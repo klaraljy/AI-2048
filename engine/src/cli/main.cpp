@@ -20,6 +20,8 @@
 #include <vector>
 
 #include "ai/evaluate.h"
+#include "ai/learn/trainer.h"
+#include "ai/learn/value_network.h"
 #include "ai/search.h"
 #include "ai2048/ai2048.h"
 #include "core/board.h"
@@ -58,6 +60,12 @@ struct Options {
   ai2048::Difficulty difficulty = ai2048::Difficulty::kNormal;
   // 置换表条目数；0 表示用默认容量。用于对照"表越大是否越好"。
   int tt_entries = 0;
+  // train 子命令：TD 学习的超参数
+  int train_games = 200;
+  int train_eval_every = 25;
+  int train_eval_games = 12;
+  double train_lr = 0.002;
+  std::string out_path;
   ai2048::Weights weight_overrides;
 };
 
@@ -120,6 +128,22 @@ struct Options {
       options->use_tt = false;
     } else if (arg == "--tt-entries") {
       if (!take_int(&options->tt_entries)) return false;
+    } else if (arg == "--games") {
+      if (!take_int(&options->train_games)) return false;
+    } else if (arg == "--eval-every") {
+      if (!take_int(&options->train_eval_every)) return false;
+    } else if (arg == "--eval-games") {
+      if (!take_int(&options->train_eval_games)) return false;
+    } else if (arg == "--lr") {
+      std::string raw;
+      if (!take(&raw)) return false;
+      try {
+        options->train_lr = std::stod(raw);
+      } catch (...) {
+        return false;
+      }
+    } else if (arg == "--out") {
+      if (!take(&options->out_path)) return false;
     } else if (arg == "--symmetry") {
       options->symmetry_keys = true;
     } else if (arg == "--difficulty") {
@@ -282,6 +306,75 @@ struct Options {
     return std::nullopt;
   }
   return seeds;
+}
+
+// ---------------------------------------------------------------------------
+// train：用自我对弈训练 n-tuple 价值网络（TD 学习）
+//
+// 这是"换评估函数"路线的第一个阶段：先用最小的网络验证**能不能学**，
+// 学得动再往上加 tuple 数量与长度。
+//
+// 判断"有没有在学"的唯一硬指标是**贪心评估分**（eval），不是训练期的随机走子分：
+// 随机走子分只反映盘面分布，与网络好坏无关。
+// ---------------------------------------------------------------------------
+int RunTrain(const Options& options) {
+  using ai2048::learn::TrainConfig;
+  using ai2048::learn::TrainLog;
+  using ai2048::learn::ValueNetwork;
+
+  // 单 4-tuple × 4 行 = 4 个 tuple，参数 4 × 65536 ≈ 26 万。
+  // 刻意小：C1 只要证明"梯度方向是对的"，不需要容量。
+  ValueNetwork network(ValueNetwork::RowTuples());
+
+  TrainConfig config;
+  config.games = options.train_games;
+  config.learning_rate = options.train_lr;
+  config.discount = 0.98;
+  config.seed = options.seed != 0 ? options.seed : 12345;
+  config.difficulty = options.difficulty == ai2048::Difficulty::kEasy   ? 0
+                      : options.difficulty == ai2048::Difficulty::kHard ? 2
+                                                                        : 1;
+  config.eval_every = options.train_eval_every;
+  config.eval_games = options.train_eval_games;
+
+  std::cout << "TD 学习训练（n-tuple 价值网络）\n";
+  std::cout << "  参数数量   : " << network.parameter_count() << "（" << network.tuple_count()
+            << " 个 4-tuple）\n";
+  std::cout << "  局数       : " << config.games << "\n";
+  std::cout << "  学习率     : " << config.learning_rate << "，折扣 " << config.discount << "\n";
+  std::cout << "  评估频率   : 每 " << config.eval_every << " 局（" << config.eval_games
+            << " 局贪心）\n";
+  std::cout << "  策略       : ε-greedy 自对弈，ε " << config.epsilon_start << " → "
+            << config.epsilon_end << "\n";
+  std::cout << "\n";
+  std::cout << "  局数    评估均分   评估最高   256    512   1024   训练均分\n";
+  std::cout << "  ------  ---------  ---------  -----  -----  -----  ---------\n";
+  std::cout.flush();
+
+  const auto started = std::chrono::steady_clock::now();
+
+  ai2048::learn::Train(&network, config, [&](const TrainLog& entry) {
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    std::printf("  %6d  %9.0f  %9d  %5d  %5d  %5d  %9.0f   (%.0fs)\n", entry.games_done,
+                entry.eval.mean_score, entry.eval.best_score, entry.eval.reach_256,
+                entry.eval.reach_512, entry.eval.reach_1024, entry.mean_train_score, seconds);
+    std::cout.flush();
+  });
+
+  const double total_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+  std::cout << "\n训练耗时 " << total_seconds << " s\n";
+
+  if (!options.out_path.empty()) {
+    std::string error;
+    if (!network.Save(options.out_path, &error)) {
+      std::cerr << "保存权重失败：" << error << "\n";
+      return 1;
+    }
+    std::cout << "权重已保存到 " << options.out_path << "\n";
+  }
+  return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -963,6 +1056,7 @@ int main(int argc, char** argv) {
   if (command == "json") return RunJsonCheck();
   if (command == "selfcheck") return RunSelfCheck(options);
   if (command == "bench") return RunBench(options);
+  if (command == "train") return RunTrain(options);
 
   std::cerr << "未知子命令: " << command << "\n\n";
   PrintUsage();

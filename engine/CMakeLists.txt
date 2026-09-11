@@ -48,6 +48,9 @@ endfunction()
 # ---------------------------------------------------------------------------
 add_library(ai2048_core STATIC
   src/ai/evaluate.cpp
+  # n-tuple 价值网络 + TD 学习（"换评估函数"路线的实现，见 ai/learn/）
+  src/ai/learn/trainer.cpp
+  src/ai/learn/value_network.cpp
   src/ai/search.cpp
   src/core/board.cpp
   src/core/console.cpp
