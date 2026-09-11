@@ -319,6 +319,25 @@ $b = [System.IO.File]::ReadAllBytes($p)
 
 **更省事的办法：优先用编辑器的 `write` / `edit` 工具，不用 PowerShell 重定向写文件。**
 
+### 三个构建目录，别搞混（改完必须重建 `engine/build`）
+
+| 目录 | 用途 | 谁会用到 |
+|---|---|---|
+| `engine/build` | **正式构建** | `start-ai2048.bat`（启动器硬编码这个路径）、手工验证 |
+| `engine/build-dev` | 开发构建 | 长任务占用 `build` 里的 exe 时，用它做快速迭代 |
+| `engine/build-tests` | 测试构建（含 GoogleTest） | `ctest` |
+
+**改完代码必须重建 `engine/build`，否则启动器跑的是旧 exe。**
+这个坑真实踩过：给服务端加了 `--net-file`，在 `build-dev` 里验证通过，
+但启动器用的是 `engine/build` 的旧版本，报 `未知选项: --net-file` ——
+而启动器自己的新代码（打印"叶子评估：学习权重"）是生效的，
+所以日志看起来"配置读到了"，实际底层根本不认识这个参数。
+**从日志表面看不出问题，必须看引擎自己那几行输出。**
+
+另外：跑 `bench` / `train` 这类长任务时，exe 被占用会导致**链接失败**
+（`cannot open output file ...: Permission denied`）。这不是代码问题，
+等它跑完或改用 `build-dev` 即可。
+
 ### 引擎端口不是游戏页面
 
 `ai2048-server` 是**纯 WebSocket 服务**，只用来说协议、给 AI 决策，
