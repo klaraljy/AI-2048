@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      用 NoActionBar：前端自己有一整行控制区（难度 / AI 强度 / AI 速度），
+      再加一条系统标题栏只是白占竖向空间，而且标题栏配色与前端配色对不上。
+
+      windowBackground 取的是前端页面底色（CSS 变量 page-bg，值 #cf8571），
+      不是白色 —— 否则 WebView 首帧渲染之前会闪一下白，很难看。
+
+      注意：XML 注释里不能出现连续两个减号（会让解析器认为注释提前结束），
+      所以这里不能直接写那个 CSS 变量名。
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#cf8571</item>
+        <item name="android:statusBarColor">#cf8571</item>
+        <item name="android:navigationBarColor">#cf8571</item>
+    </style>
+</resources>

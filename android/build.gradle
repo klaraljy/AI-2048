@@ -1,0 +1,8 @@
+// 根构建脚本。
+//
+// AGP 版本锁定 8.7.2 —— 这是**本机 Gradle 缓存里已有的版本**（配 Gradle 8.11.1）。
+// 不要随手升到 8.8+：那会触发一次几百 MB 的依赖下载，而这个项目对 AGP
+// 版本没有任何特殊要求。要升级时先确认 gradle-home 缓存里有对应版本。
+plugins {
+    id 'com.android.application' version '8.7.2' apply false
+}

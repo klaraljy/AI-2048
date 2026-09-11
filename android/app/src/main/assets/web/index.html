@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#cf8571" />
+    <title>AI-2048</title>
+    <link rel="stylesheet" href="./css/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <h1 class="title">2048</h1>
+        <div class="scores">
+          <div class="score-box">
+            <span class="score-label">当前的</span>
+            <div class="score-roll" id="score-roll">
+              <strong class="score-value" id="score">0</strong>
+            </div>
+          </div>
+          <div class="score-box best" id="best-box">
+            <span class="score-label" id="best-label">
+              <span class="crown" aria-hidden="true">♛</span>所有时间
+            </span>
+            <div class="score-roll" id="best-roll">
+              <strong class="score-value" id="best">0</strong>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <!--
+        控件全部放在同一行。
+        「难度」带说明所以宽一些；「AI 强度 / AI 速度」用短标签。
+        「开局」是给测试用的（固定种子才能公平比较强度），
+        所以只留一个紧凑的输入框，等完结时删掉即可。
+      -->
+      <div class="controls">
+        <label class="ctl ctl-wide">
+          <span class="ctl-icon" aria-hidden="true">🎯</span>
+          <select id="difficulty" aria-label="难度"></select>
+        </label>
+        <label class="ctl">
+          <span class="ctl-icon" aria-hidden="true">🧠</span>
+          <select id="strength" aria-label="AI 强度"></select>
+        </label>
+        <label class="ctl">
+          <span class="ctl-icon" aria-hidden="true">⚡</span>
+          <select id="speed" aria-label="AI 速度"></select>
+        </label>
+        <span class="spacer"></span>
+        <label class="ctl ctl-seed">
+          <span class="ctl-icon" aria-hidden="true">🎲</span>
+          <input id="seed" type="text" value="random" aria-label="开局种子" />
+        </label>
+        <button id="new-game" type="button" class="ghost" title="新游戏（R）">
+          <span aria-hidden="true">↻</span>
+        </button>
+        <button id="undo" type="button" class="ghost" disabled title="撤销（U）">
+          <span aria-hidden="true">↶</span>
+        </button>
+        <button id="ai-auto" type="button" class="ghost" title="AI 自动演示">
+          <span aria-hidden="true">▶</span>
+        </button>
+        <!--
+          单步用 ⇥ 而不是 ⏭：⏭ 在播放器里是"快进到下一段"，
+          容易被理解成"加速播放"，而这里其实是"让 AI 走一步"。
+        -->
+        <button id="ai-step" type="button" class="ghost" title="AI 走一步（空格）">
+          <span aria-hidden="true">⇥</span>
+        </button>
+        <button id="mute" type="button" class="ghost" aria-pressed="false" title="音效（M）">
+          <span aria-hidden="true">🔊</span>
+        </button>
+      </div>
+
+      <div class="session-notice hidden" id="difficulty-notice"></div>
+
+      <!--
+        棋盘左右各一条庆祝轨道。达到里程碑时从两侧放小烟花，
+        而不是弹一个遮罩挡住棋盘 —— 遮罩会把 AI 演示打断。
+      -->
+      <div class="board-row">
+        <canvas class="fx" id="fx-left" aria-hidden="true"></canvas>
+
+        <div class="board-wrap" id="board">
+          <div class="grid" id="grid"></div>
+          <div class="tiles" id="tiles"></div>
+
+          <!-- 只在真正结束时出现；达到 2048 不再弹窗 -->
+          <div class="overlay" id="overlay">
+            <h2 id="overlay-title">游戏结束</h2>
+            <p id="overlay-text"></p>
+            <div>
+              <button id="overlay-undo" type="button" class="ghost">撤销一步</button>
+              <button id="overlay-restart" type="button">再来一局</button>
+            </div>
+          </div>
+        </div>
+
+        <canvas class="fx" id="fx-right" aria-hidden="true"></canvas>
+      </div>
+
+      <div class="notice hidden" id="notice"></div>
+
+      <p class="hint">
+        <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> 或
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动，手机上直接滑动。
+        <kbd>R</kbd> 重开，<kbd>U</kbd> 撤销，<kbd>M</kbd> 静音，
+        <kbd>空格</kbd> 让 AI 走一步。
+      </p>
+    </div>
+
+    <script type="module" src="./js/main.js"></script>
+  </body>
+</html>

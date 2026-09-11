@@ -1,0 +1,21 @@
+// 插件与依赖仓库。
+//
+// google() 必须在前 —— AGP 与 androidx 都只在那里面。
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'AI-2048'
+include ':app'

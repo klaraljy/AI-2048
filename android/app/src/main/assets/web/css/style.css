@@ -1,0 +1,583 @@
+/* ===========================================================================
+   AI-2048 样式
+
+   配色（按用户指定）：
+     页面背景            #cf8571
+     棋盘底色            #9b7b78   方块"生成位置"的底色
+     棋盘格隙            #815b61
+     深色数字            #434b54   只有 2、4、8、256、512 用深色
+     浅色数字            #fefcf7   其余数字
+     分数框              #50332d
+     分数框文字          #fffefd
+     超过历史最高分的强调 #52bdab
+
+   方块配色见「方块」一节。4096 及以后统一偏黑 —— 按用户说明，再往上不变。
+
+   布局要点：棋盘是 position:relative 的容器，方块**绝对定位**并通过
+   transform 移动。这是滑动动画的前提 —— 参考原型用 CSS Grid 直接放方块、
+   每步重建节点，那种结构下方块没有身份、也没有"上一帧位置"，动画做不了。
+   =========================================================================== */
+
+:root {
+  --page-bg: #cf8571;
+  --board-bg: #9b7b78;
+  --board-gap: #815b61;
+  --text-dark: #434b54;
+  --text-light: #fefcf7;
+  --panel: #50332d;
+  --panel-text: #fffefd;
+  --accent: #52bdab;
+  --radius: 8px;
+  --gap: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--page-bg);
+  color: var(--text-light);
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  display: flex;
+  justify-content: center;
+  padding: 20px 16px 40px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app {
+  width: 100%;
+  max-width: 560px;
+}
+
+/* ------------------------------------------------------------------ 顶栏 */
+
+.topbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.title {
+  margin: 0;
+  font-size: 46px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  line-height: 1;
+  color: var(--text-light);
+}
+
+/* 两个分数框靠在一起、整体偏中间 */
+.scores {
+  display: flex;
+  gap: 10px;
+  margin-right: 8%;
+}
+
+.score-box {
+  min-width: 108px;
+  /* 下内边距给足：数字滚动的容器有固定高度，padding 不够时底部会被裁 */
+  padding: 7px 14px 11px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--panel-text);
+  text-align: center;
+  transition: background 220ms ease, color 220ms ease;
+}
+
+.score-label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+/* 皇冠只出现在"所有时间"上 */
+.crown {
+  color: #f5c451;
+  margin-right: 1px;
+}
+
+.score-value {
+  display: block;
+  font-size: 24px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
+
+/* 滚轮容器：数字在其中滚动，超出部分裁掉。
+   高度按数字的实际行高给足（24px × 1.3 ≈ 31.2），留 36px —— 之前写成
+   1.35em 是按父级 16px 算的（只有 21.6px），数字底部被裁掉一截。 */
+.score-roll {
+  position: relative;
+  overflow: hidden;
+  height: 36px;
+}
+
+/* 滚出画面的旧数字：绝对定位叠在同一位置，滚完即删 */
+.score-value-out {
+  position: absolute;
+  inset: 0;
+}
+
+/* 当前分数超过历史最高 → 最高分框转为强调色 */
+.score-box.beaten {
+  background: var(--accent);
+  color: #04322a;
+}
+
+.score-box.beaten .crown {
+  color: #04322a;
+}
+
+@keyframes score-pop {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  35% {
+    transform: translateY(-0.2em) scale(1.14);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+.score-value.pop {
+  animation: score-pop 300ms ease-out;
+}
+
+/* ------------------------------------------------------------- 控件（单行） */
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 6px;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* 难度带说明文字，给它更多宽度 */
+.ctl-wide {
+  flex: 1 1 190px;
+  min-width: 170px;
+}
+
+.ctl-seed {
+  padding: 2px 6px;
+}
+
+.ctl-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+select,
+input[type='text'] {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-light);
+  background: transparent;
+  border: 0;
+  outline: none;
+  cursor: pointer;
+  width: 100%;
+}
+
+select option {
+  color: #241a18;
+  background: #fff;
+}
+
+.ctl-seed input {
+  width: 74px;
+  text-align: center;
+  cursor: text;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+button {
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--panel-text);
+  background: var(--panel);
+  border: 0;
+  border-radius: var(--radius);
+  padding: 7px 11px;
+  cursor: pointer;
+  transition: background 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+button.ghost {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.93);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button.active {
+  background: var(--accent);
+  color: #04322a;
+}
+
+/* ------------------------------------------------------------------ 棋盘 */
+
+.board-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* 两侧的庆祝轨道：不吃点击事件 */
+.fx {
+  flex: 1 1 50px;
+  max-width: 100px;
+  height: 200px;
+  pointer-events: none;
+}
+
+.board-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  width: min(100%, 452px);
+  aspect-ratio: 1 / 1;
+  padding: var(--gap);
+  border-radius: 12px;
+  background: var(--board-bg);
+  touch-action: none;
+  user-select: none;
+  /* 庆祝数字从棋盘内向上飞出，不能溢出到外面 */
+  overflow: hidden;
+}
+
+.grid,
+.tiles {
+  position: absolute;
+  inset: var(--gap);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  gap: var(--gap);
+}
+
+/* 格隙用棋盘底色透出来 → 这就是"方块与方块之间空隙的颜色" */
+.grid-cell {
+  border-radius: var(--radius);
+  background: var(--board-gap);
+}
+
+.tiles {
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ 方块 */
+
+.tile {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  /* 时长必须与 renderer.js 的 TIMING.slide 一致，否则动画结束后位置会跳 */
+  transition: transform 110ms ease-in-out;
+  will-change: transform;
+  color: var(--text-light);
+}
+
+/* ---- 配色：只有 2、4、8、256、512 用深色数字 ---- */
+.tile[data-value='2'] {
+  background: #fef0de;
+}
+.tile[data-value='4'] {
+  background: #fee8ca;
+}
+.tile[data-value='8'] {
+  background: #fdc573;
+}
+.tile[data-value='16'] {
+  background: #ffab5c;
+}
+.tile[data-value='32'] {
+  background: #fe8b54;
+}
+.tile[data-value='64'] {
+  background: #fe6e55;
+}
+.tile[data-value='128'] {
+  background: #c1c37b;
+}
+.tile[data-value='256'] {
+  background: #8cc290;
+}
+.tile[data-value='512'] {
+  background: #53beac;
+}
+.tile[data-value='1024'] {
+  background: #04b7d6;
+}
+.tile[data-value='2048'] {
+  background: #03b2f5;
+}
+/* 4096 及以后统一偏黑 —— 按用户说明，再往上不变 */
+.tile[data-value='4096'] {
+  background: #424c54;
+}
+.tile[data-value='8192'] {
+  background: #414b53;
+}
+.tile.t-deep {
+  background: #3b444c;
+}
+
+.tile[data-value='2'],
+.tile[data-value='4'],
+.tile[data-value='8'],
+.tile[data-value='256'],
+.tile[data-value='512'] {
+  color: var(--text-dark);
+}
+
+/* ---- 字号按位数递减，避免大数字溢出 ---- */
+.tile.f-2 {
+  font-size: 34px;
+}
+.tile.f-3 {
+  font-size: 30px;
+}
+.tile.f-4 {
+  font-size: 24px;
+}
+.tile.f-5 {
+  font-size: 19px;
+}
+.tile.f-6 {
+  font-size: 16px;
+}
+.tile.f-7 {
+  font-size: 13px;
+}
+
+/* ---- 动画 ----
+   关键：keyframes 里的 transform **必须叠加 var(--tile-pos)**。
+   方块的位置是 renderer 用 translate3d 写在 style.transform 上的，
+   如果动画只写 scale()，那动画期间就会**覆盖掉位移** ——
+   方块先闪现在左上角再跳回原位，看起来就是"一闪一闪"。
+   renderer 已经把位置同步写进 --tile-pos，这里照用即可。 */
+@keyframes tile-appear {
+  0% {
+    opacity: 0;
+    transform: var(--tile-pos) scale(0.3);
+  }
+  100% {
+    opacity: 1;
+    transform: var(--tile-pos) scale(1);
+  }
+}
+
+@keyframes tile-merge {
+  0% {
+    transform: var(--tile-pos) scale(1);
+  }
+  55% {
+    transform: var(--tile-pos) scale(1.18);
+  }
+  100% {
+    transform: var(--tile-pos) scale(1);
+  }
+}
+
+.tile.new {
+  animation: tile-appear 160ms ease-out;
+}
+
+.tile.merged {
+  animation: tile-merge 170ms ease-out;
+}
+
+/* 合并时飘出的 +N */
+@keyframes score-float {
+  0% {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -46px);
+    opacity: 0;
+  }
+}
+
+.score-float {
+  position: absolute;
+  left: 50%;
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text-light);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: score-float 900ms ease-out forwards;
+}
+
+/* 庆祝时飞出的数字：**纯数字，没有框**（按用户要求）。
+   --x 控制水平位置、--y 控制起始高度、--scale 控制大小，
+   三个数字由 celebration.js 分散开，互不重叠。 */
+@keyframes celebration-number {
+  0% {
+    transform: translate(-50%, 12px) scale(calc(var(--scale) * 0.4));
+    opacity: 0;
+  }
+  22% {
+    transform: translate(-50%, -6px) scale(var(--scale));
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -78px) scale(calc(var(--scale) * 1.08));
+    opacity: 0;
+  }
+}
+
+.celebration-number {
+  position: absolute;
+  left: var(--x, 50%);
+  bottom: var(--y, 28%);
+  font-size: 30px;
+  font-weight: 900;
+  color: #fff6d8;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: 4;
+  animation: celebration-number 1200ms ease-out forwards;
+}
+
+/* ------------------------------------------------------------ 结束遮罩 */
+
+/* 只在真正结束时出现。达到 2048 不再弹窗（会打断 AI 演示），
+   改为在棋盘两侧放小烟花。 */
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+  background: rgba(80, 51, 45, 0.88);
+  z-index: 5;
+}
+
+.overlay.show {
+  display: flex;
+}
+
+.overlay h2 {
+  margin: 0;
+  font-size: 26px;
+}
+
+.overlay p {
+  margin: 0;
+  font-size: 14px;
+  opacity: 0.92;
+}
+
+.overlay > div {
+  display: flex;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------------ 提示 */
+
+.notice,
+.session-notice {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--text-light);
+}
+
+.notice.hidden,
+.session-notice.hidden {
+  display: none;
+}
+
+.hint {
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.84);
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 1px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.22);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+/* -------------------------------------------------------------- 无障碍 */
+
+/* 尊重"减少动态效果"：关掉装饰性动画，但**不能卡住位置** ——
+   renderer 仍然立刻设置 transform，只是没有过渡。 */
+@media (prefers-reduced-motion: reduce) {
+  .tile {
+    transition: none;
+  }
+  .tile.new,
+  .tile.merged,
+  .score-value.pop,
+  .score-float {
+    animation: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .fx {
+    display: none;
+  }
+  .scores {
+    margin-right: 0;
+  }
+}

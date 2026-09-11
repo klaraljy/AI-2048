@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.ai2048.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.ai2048.app"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    buildTypes {
+        release {
+            // 不混淆：这是个 WebView 壳，混淆收益接近零，出问题时反而让堆栈没法读。
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kotlin 标准库的版本冲突（实测踩到，必须排除）
+//
+// androidx.webkit 传递依赖了 kotlin-stdlib-jdk7 / jdk8 的 **1.6.21**，
+// 而 kotlin 从 1.8 起把这两个 artifact 的内容**合并进了主 stdlib**。
+// 结果 kotlin-stdlib 1.8.22 与 jdk7/jdk8 1.6.21 同时出现在 classpath 上，
+// 类重复，构建直接失败：
+//
+//     Duplicate class kotlin.io.path.PathsKt found in modules
+//       kotlin-stdlib-1.8.22.jar and kotlin-stdlib-jdk7-1.6.21.jar
+//
+// 官方推荐的修法就是排除旧的两个 —— 内容已经在主 stdlib 里了，
+// 排除不会丢功能。
+// ---------------------------------------------------------------------------
+configurations.configureEach {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+}
+
+dependencies {
+    // WebViewAssetLoader 在 webkit 里。用它而不是 file:// 的原因见 MainActivity：
+    // file:// 下 Web Audio、ES module、localStorage 都受限制。
+    implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'androidx.activity:activity:1.9.2'
+}

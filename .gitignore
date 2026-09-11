@@ -72,6 +72,14 @@ android/captures/
 *.jks
 gradle-home/
 
+# 前端资源在 Android 侧的副本：与 web/ 是同一份内容，但**必须提交**。
+# 理由：APK 里要的是 assets，如果它在 .gitignore 里，clone 下来直接构建
+# 会得到一个没有前端的空壳 APK —— 那种失败很难一眼看出原因。
+# 代价是这份副本可能落后于 web/，所以：
+#   ⚠️ 改动 web/ 之后必须重新同步到 android/app/src/main/assets/web/
+# 同步命令记在 android/README.md 里。
+# （注意：不要在这里 ignore 它。曾想用 assets/web/ 忽略，那会直接做出空壳包。）
+
 # ---- Node（前端无构建，仅防意外） ----
 node_modules/
 package-lock.json
