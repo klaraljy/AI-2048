@@ -31,6 +31,8 @@ export class Sound {
     this.drum = null;
     this.loading = false;
     this.muted = false;
+    /** 正在等 resume() 落地 —— 避免每帧都发起一次 resume。 */
+    this._resuming = false;
     try {
       this.muted = localStorage.getItem(MUTE_KEY) === '1';
     } catch {
@@ -38,9 +40,21 @@ export class Sound {
     }
   }
 
-  /** 音频是否可用（AudioContext 只能由用户手势创建）。 */
+  /**
+   * 音频是否可用。
+   *
+   * ⚠️ **这里刻意不检查 `ctx.state === 'running'`。**（踩过的坑）
+   *
+   * 原先写的是 `ctx !== null && ctx.state === 'running'`，而 `play()` 开头是
+   * `if (this.muted || !this.ready) return;`。问题在于 `resume()` 是**异步**的：
+   * 在它落地之前 state 一直是 'suspended'，于是那段时间内所有音效被静默丢弃。
+   * 用户看到的现象是「点了没声音，要关掉重开才有」。
+   *
+   * 现在这个 getter 只表示"context 对象存在"，能不能出声交给 `play()` 去处理
+   * （它会尝试 resume，见下面的说明）。
+   */
   get ready() {
-    return this.ctx !== null && this.ctx.state === 'running';
+    return this.ctx !== null;
   }
 
   /** 采样是否就绪。没就绪时走合成兜底，不影响出声。 */
@@ -63,11 +77,26 @@ export class Sound {
         this.ctx = null;
         return;
       }
-    } else if (this.ctx.state === 'suspended') {
-      // 有些浏览器会把 context 挂起（切标签页回来）
-      this.ctx.resume().catch(() => {});
     }
+    this._resumeIfSuspended();
     this._loadSample();
+  }
+
+  /**
+   * 如果 context 处于 suspended，就恢复它。
+   *
+   * 不需要等 Promise —— 恢复完成后后续的 `play()` 会自动出声。
+   * 用 `_resuming` 去重，避免连续点击时堆一堆 resume() 调用。
+   */
+  _resumeIfSuspended() {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state === 'running' || this._resuming) return;
+    this._resuming = true;
+    ctx.resume()
+      .catch(() => {})
+      .finally(() => {
+        this._resuming = false;
+      });
   }
 
   /** 异步加载鼓声采样，只加载一次。失败就保持合成兜底，不打断玩法。 */
@@ -114,7 +143,17 @@ export class Sound {
    * @param {number} [pitchScale] 音高倍数（合并音按块大小变调）
    */
   play(name, pitchScale = 1) {
-    if (this.muted || !this.ready) return;
+    if (this.muted) return;
+    if (!this.ctx) return; // 从未解锁过：没有 context 就没法出声
+
+    // 自愈：context 可能因为切标签页、或 resume() 还没落地而处于 suspended。
+    // 这里主动催一次恢复，**并且照常尝试播放** —— 正在恢复中的 context
+    // 仍会把音排进队列，恢复后就能听到。
+    //
+    // 早先这里是 `if (!this.ready) return;`，而 ready 又要求 state 已经是
+    // 'running'。结果是：点击后到 resume() 落地之间的音全被丢掉，
+    // 表现为「第一次点击没声音」。现在只跳过"根本没有 context"的情况。
+    if (this.ctx.state !== 'running') this._resumeIfSuspended();
 
     // 合并音优先用采样：真实鼓声的敲击感是合成做不到的
     if (name === 'merge' && this.drum) {

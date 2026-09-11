@@ -182,6 +182,27 @@ const input = new Input({
   onAiStep: () => void aiStep(),
 });
 
+// 全局手势解锁音频。
+//
+// ⚠️ **不能只靠 Input 的 onUnlock。**（踩过的坑）
+//
+// `Input` 只在**棋盘**上监听 pointerdown、在 window 上监听 keydown。
+// 但 AI 按钮（单步 / 自动演示）、开局、撤销这些都是普通 <button>，
+// 点它们走的是另一条事件路径，永远触发不到 `_fireUnlock`。
+//
+// 用户看到的现象就是「点 AI 测试没声音，得关掉重开才有」——
+// 因为重开后他先碰了棋盘，音频才被解锁。
+//
+// 这里在**捕获阶段**挂一次全局监听：任何一次点击/按键都解锁。
+// 用 capture 是为了先于按钮自己的 handler 执行，保证第一次点击就出声。
+// `once` 不能全用：切标签页回来 context 会被挂起，需要能再次恢复，
+// 所以保留监听，由 Sound.unlock() 自己保证重复调用是廉价的。
+function unlockAudioOnce() {
+  sound.unlock();
+}
+document.addEventListener('pointerdown', unlockAudioOnce, { capture: true });
+document.addEventListener('keydown', unlockAudioOnce, { capture: true });
+
 /** 刷新按钮的可用状态。输入锁本身由 isLocked 回调派生，不需要在这里同步。 */
 function refreshControls() {
   el.undo.disabled = !game || !game.canUndo || renderer.busy();
