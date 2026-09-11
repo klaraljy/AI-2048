@@ -123,6 +123,7 @@ if(AI2048_BUILD_TESTS)
   add_executable(ai2048_tests
     tests/board_test.cpp
     tests/console_test.cpp
+    tests/difficulty_test.cpp
     tests/net_test.cpp
   )
   target_link_libraries(ai2048_tests

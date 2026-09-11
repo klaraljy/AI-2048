@@ -21,6 +21,18 @@ constexpr double kProbTwo = 0.9;
 constexpr std::uint8_t kKindMax = 1;
 constexpr std::uint8_t kKindChance = 2;
 
+// 「这一局已经输了」的分数。
+//
+// **必须是有限值，不能用 -infinity。** 这是踩过的坑：
+// 根节点用 `-inf` 当"这个方向还没搜过"的哨兵，见下面的 `std::isinf` 判断。
+// 如果死局也用 -inf 表示，那么"必败"和"没搜过"就分不开了 ——
+// 根节点会把必败方向当成未搜索，回退到 quick_estimate，于是必败局面拿到正分
+// （实测：差一步死的局面在深度 8 上打 +2357）。
+//
+// 取一个绝对值远大于任何评估结果的有限值即可：评估的量级在千位，
+// 这里用 -1e30，既不会与正常分数混淆，也不会在累加/平均时溢出。
+constexpr float kLostValue = -1.0e30F;
+
 // 混合函数：避免低位相同的棋盘挤在同一个桶里。
 [[nodiscard]] std::uint64_t MixHash(std::uint64_t board, std::uint8_t kind) noexcept {
   std::uint64_t x = board ^ (static_cast<std::uint64_t>(kind) * 0x9E37'79B9'7F4A'7C15ULL);
@@ -181,7 +193,6 @@ class Searcher {
   [[nodiscard]] float SearchMax(std::uint64_t board, int depth, double probability) {
     ++stats_.nodes;
     if (OutOfTime()) return Evaluate(board, config_.weights);
-    if (depth <= 0) return Evaluate(board, config_.weights);
 
     if (table_ != nullptr) {
       if (const auto cached = table_->Lookup(board, depth, kKindMax)) {
@@ -197,11 +208,27 @@ class Searcher {
       const MoveResult move = ApplyMove(board, direction);
       if (!move.moved) continue;
       any_legal = true;
+      if (depth <= 0) continue;  // 深度用完：这一层只看合法性，不再往下搜
       best = std::max(best, SearchChance(move.board, depth - 1, probability));
     }
 
-    // 没有合法走子说明这一局已经结束，直接按静态评估给分。
-    if (!any_legal) best = Evaluate(board, config_.weights);
+    // **死局必须显式判定，不能靠静态评估"碰巧给低分"。**
+    //
+    // 这是从参考实现（F:\AI编程\2048-ai2\2048-ai）的缺陷里学来的一条：
+    // 它的叶节点不检查死局，于是实测同一个必败局面
+    // `expectimax(depth=0) = +11499`、`expectimax(depth=2) = -1e18` ——
+    // 是否识别死局取决于它在第几层被发现，而且叶子上是**正分**。
+    //
+    // 本实现原先也有一版错法：用 -infinity 表示死局，而根节点又用 -infinity
+    // 当"未搜索"的哨兵，两者混在一起，必败方向被回退成 quick_estimate，
+    // 结果必败局面在深度 8 上照样拿正分。现在用有限的 kLostValue 表示必败。
+    if (!any_legal) {
+      best = kLostValue;
+    } else if (depth <= 0) {
+      // 深度用完但仍有路可走：用静态评估。这里特意放在死局判定**之后**，
+      // 顺序反了就会重演"地平线内的死局变成正分"。
+      best = Evaluate(board, config_.weights);
+    }
 
     if (table_ != nullptr) {
       table_->Store(board, depth, kKindMax, best);

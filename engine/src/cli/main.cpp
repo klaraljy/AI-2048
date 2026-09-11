@@ -53,6 +53,9 @@ struct Options {
   std::string move_spec;                // move 子命令：16 个指数
   std::string move_direction = "left";  // move 子命令：方向名
   bool move_stdin = false;              // move 子命令：从 stdin 批量读
+  // 难度改变新方块的**位置分布**，因此改变规则。默认 normal = 标准 2048。
+  // 跑批结果必须带难度标记：分数不跨难度可比。
+  ai2048::Difficulty difficulty = ai2048::Difficulty::kNormal;
   ai2048::Weights weight_overrides;
 };
 
@@ -115,6 +118,19 @@ struct Options {
       options->use_tt = false;
     } else if (arg == "--symmetry") {
       options->symmetry_keys = true;
+    } else if (arg == "--difficulty") {
+      std::string name;
+      if (!take(&name)) return false;
+      if (name == "normal") {
+        options->difficulty = ai2048::Difficulty::kNormal;
+      } else if (name == "easy") {
+        options->difficulty = ai2048::Difficulty::kEasy;
+      } else if (name == "hard") {
+        options->difficulty = ai2048::Difficulty::kHard;
+      } else {
+        std::cerr << "无法识别 --difficulty: " << name << "（可选 normal / easy / hard）\n";
+        return false;
+      }
     } else if (arg == "--board") {
       if (!take(&options->move_spec)) return false;
     } else if (arg == "--dir") {
@@ -277,10 +293,11 @@ struct PlayOutcome {
 };
 
 [[nodiscard]] PlayOutcome PlayOneGame(std::uint64_t seed, const SearchConfig& config,
-                                      std::size_t table_capacity, bool symmetry_keys) {
+                                      std::size_t table_capacity, bool symmetry_keys,
+                                      ai2048::Difficulty difficulty = ai2048::Difficulty::kNormal) {
   const auto begin = std::chrono::steady_clock::now();
 
-  Game game(seed);
+  Game game(seed, difficulty);
   std::optional<Direction> last_move;
   // 每局一张表，局内跨步复用。表内容只由棋盘与深度决定，不依赖搜索历史，
   // 所以复用不影响结果 —— 但每局重新构造一份，保证同种子的两次运行完全一致。
@@ -455,7 +472,8 @@ int RunBench(const Options& options) {
       // 每局用独立的配置副本（含独立的置换表），互不干扰。
       // 每局的结果只由 (*seeds)[index] 决定，与它跑在哪个线程无关 ——
       // 这是"并行不改变结果"的必要条件。
-      outcomes[index] = PlayOneGame((*seeds)[index], base_config, table_capacity, symmetry_keys);
+      outcomes[index] = PlayOneGame((*seeds)[index], base_config, table_capacity, symmetry_keys,
+                                    options.difficulty);
 
       const int done = completed.fetch_add(1) + 1;
       if (done % 50 == 0 || static_cast<std::size_t>(done) == seeds->size()) {
@@ -501,6 +519,13 @@ int RunBench(const Options& options) {
 
   std::cout << "规则集版本 : " << ai2048::RulesetVersion() << "\n";
   if (!options.tag.empty()) std::cout << "标记       : " << options.tag << "\n";
+  // 难度改变生成位置 = 改变规则，所以必须打出来。
+  // 不打印的话，两份不同难度的跑批结果看起来完全一样，会被误当成可比。
+  std::cout << "难度       : " << ai2048::DifficultyName(options.difficulty);
+  if (options.difficulty != ai2048::Difficulty::kNormal) {
+    std::cout << "（**非标准规则**，分数不可与 normal 比较）";
+  }
+  std::cout << "\n";
   std::cout << "基础深度   : " << options.depth;
   if (options.time_budget_ms > 0) std::cout << "，时间预算 " << options.time_budget_ms << "ms";
   if (options.chance_limit > 0) std::cout << "，chance 采样上限 " << options.chance_limit;
