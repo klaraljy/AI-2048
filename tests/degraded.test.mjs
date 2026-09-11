@@ -69,7 +69,81 @@ console.log('降级路径测试：');
   check('构造失败后 play 仍不抛异常', threw === null, threw ? String(threw) : '');
 }
 
-// --- 3. 不传 engineUrl：应直接用降级 AI ---
+// --- 3. context 处于 suspended 时必须仍能出声（这是真实用户报过的 bug） ---
+//
+// 现象：「点 AI 测试没声音，关掉重开才有」。
+//
+// 根因有两个，都在这里钉住：
+//   a) ready 曾经要求 state === 'running'，而 resume() 是异步的 ——
+//      在它落地之前 play() 会直接 return，第一次点击的音全被丢掉。
+//   b) AI 按钮不经过 Input 的手势解锁路径，AudioContext 压根没被创建。
+//
+// (b) 在 main.js 里用全局 capture 监听解决，(a) 在这里守。
+{
+  const calls = { resume: 0, oscillators: 0 };
+
+  class StubAudioContext {
+    constructor() {
+      // 浏览器在用户手势之外创建的 context 就是 'suspended'，
+      // 这里刻意用这个状态，才能复现"第一次点击没声音"。
+      this.state = 'suspended';
+      this.currentTime = 0;
+      this.sampleRate = 44100;
+      this.destination = {};
+    }
+    resume() {
+      calls.resume += 1;
+      this.state = 'running';
+      return Promise.resolve();
+    }
+    createGain() {
+      return {
+        gain: { value: 1, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} },
+        connect() {},
+      };
+    }
+    createOscillator() {
+      calls.oscillators += 1;
+      return { type: '', frequency: { value: 0 }, connect() {}, start() {}, stop() {} };
+    }
+    createBiquadFilter() {
+      return { type: '', frequency: { value: 0 }, Q: { value: 0 }, connect() {} };
+    }
+    createBuffer(channels, frames) {
+      return { getChannelData: () => new Float32Array(frames) };
+    }
+    createBufferSource() {
+      return { buffer: null, playbackRate: { value: 1 }, connect() {}, start() {}, stop() {} };
+    }
+    decodeAudioData() {
+      return Promise.resolve({});
+    }
+  }
+
+  globalThis.window.AudioContext = StubAudioContext;
+
+  const sound = new Sound();
+  sound.unlock();
+  check('suspended 的 context 仍算 ready（不再要求 state === running）', sound.ready === true);
+  check('unlock 会发起 resume', calls.resume >= 1);
+
+  // 关键：即使此刻 state 还没变成 running，play 也必须真的去发音，
+  // 而不是被 ready 检查拦掉。
+  const before = calls.oscillators;
+  sound.ctx.state = 'suspended'; // 模拟 resume() 尚未落地
+  sound.play('merge');
+  check('suspended 期间 play 仍然发声（不被静默丢弃）', calls.oscillators > before,
+    `oscillators: ${before} -> ${calls.oscillators}`);
+
+  // 静音时不该发声
+  const before2 = calls.oscillators;
+  sound.setMuted(true);
+  sound.play('merge');
+  check('静音时 play 不发声', calls.oscillators === before2);
+  sound.setMuted(false);
+}
+
+// --- 4. 不传 engineUrl：应直接用降级 AI ---
 {
   const result = await createTransport({ engineUrl: null });
   check('未配置引擎时降级', result.degraded === true);

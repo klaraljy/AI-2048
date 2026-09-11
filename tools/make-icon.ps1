@@ -7,25 +7,17 @@
 #
 # ## Pattern
 #
-# Four tiles in a 2x2 grid, filling almost the whole canvas:
+# ONE tile, filling almost the whole canvas, with the digits stacked in two
+# rows because "2048" does not fit on one line:
 #
-#     2  0
-#     4  8
+#     +--------+
+#     |  2 0   |
+#     |  4 8   |
+#     +--------+
 #
-# Each tile uses the colours and corner radius of a real in-game tile.
-#
-# ## One adjustment that is not optional
-#
-# In the game, the "2" tile is #fef0de (near white) and its digit is drawn
-# WHITE -- that works because it sits on a dark board. On its own there is no
-# dark board behind it, so copying that would give white text on a near-white
-# tile: invisible, especially at 16x16.
-#
-# So this icon:
-#   - fills the canvas with the board colour (--board-bg #9b7b78) as backing
-#   - draws every digit in the game's dark text colour (#434b54)
-#
-# The palette is still the game's own; only the digit colour is forced dark.
+# The tile uses the colours and corner radius of the real in-game "32" tile
+# (#fe8b54 background, #fefcf7 digits), and sits on the board colour so the
+# rounded corners read against the desktop.
 #
 # ## Usage
 #
@@ -47,8 +39,10 @@ $BoardBg = '#9b7b78'    # --board-bg
 $TileBg = '#fe8b54'     # the "32" tile background
 $DigitColor = '#fefcf7' # --text-light, the colour the game uses on that tile
 
-# All four tiles share the "32" tile's look, per the icon spec.
-$Digits = @('2', '0', '4', '8')
+# Two rows of two digits. Kept as separate strings so the row gap stays
+# independent of the glyph metrics.
+$RowTop = '20'
+$RowBottom = '48'
 
 function New-RoundedRectPath {
     param([float]$X, [float]$Y, [float]$W, [float]$H, [float]$R)
@@ -62,6 +56,20 @@ function New-RoundedRectPath {
     return $path
 }
 
+# Draws one row of digits centred on (cx, cy).
+function Draw-CenteredText {
+    param(
+        [System.Drawing.Graphics]$G,
+        [string]$Text,
+        [System.Drawing.Font]$Font,
+        [System.Drawing.Brush]$Brush,
+        [float]$Cx,
+        [float]$Cy
+    )
+    $size = $G.MeasureString($Text, $Font)
+    $g.DrawString($Text, $Font, $Brush, $Cx - $size.Width / 2, $Cy - $size.Height / 2)
+}
+
 # Draws the whole icon at baseSize and returns a new bitmap.
 function New-IconBitmap {
     param([int]$baseSize)
@@ -72,39 +80,32 @@ function New-IconBitmap {
     $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
     $g.Clear([System.Drawing.ColorTranslator]::FromHtml($BoardBg))
 
-    # Tiles fill almost the whole canvas: thin outer margin, thin seam between
-    # tiles (the seam shows the board colour, same as in the game).
+    # One tile filling almost the whole canvas: thin margin all round.
     $margin = [int]($baseSize * 0.055)
-    $gap = [int]($baseSize * 0.055)
-    $tile = [int](($baseSize - 2 * $margin - $gap) / 2)
-    $radius = [float]($tile * 0.20)
+    $tile = $baseSize - 2 * $margin
+    $radius = [float]($tile * 0.18)
 
-    for ($i = 0; $i -lt 4; $i++) {
-        $col = $i % 2
-        $row = [int][math]::Floor($i / 2)
-        $x = $margin + $col * ($tile + $gap)
-        $y = $margin + $row * ($tile + $gap)
+    $path = New-RoundedRectPath -X $margin -Y $margin -W $tile -H $tile -R $radius
+    $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($TileBg))
+    $g.FillPath($brush, $path)
+    $brush.Dispose()
+    $path.Dispose()
 
-        $path = New-RoundedRectPath -X $x -Y $y -W $tile -H $tile -R $radius
-        $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($TileBg))
-        $g.FillPath($brush, $path)
-        $brush.Dispose()
-        $path.Dispose()
+    # Font sized off the tile WIDTH, not the height: two rows have to fit in
+    # the height, so a width-based size would overflow. 0.46 keeps both rows
+    # inside the tile with a comfortable gap and still fills the width.
+    $fontSize = [float]($tile * 0.46)
+    $font = New-Object System.Drawing.Font('Segoe UI', $fontSize, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+    $fore = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($DigitColor))
 
-        # Font size ~68% of the tile width: digit fills the tile without spilling.
-        $fontSize = [float]($tile * 0.68)
-        $font = New-Object System.Drawing.Font('Segoe UI', $fontSize, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-        $fore = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($DigitColor))
+    $cx = $baseSize / 2.0
+    # Rows sit at 1/4 and 3/4 of the tile: optically balanced, equal gap.
+    $rowGap = $tile * 0.235
+    $cy = $margin + $tile / 2.0
+    Draw-CenteredText -G $g -Text $RowTop -Font $font -Brush $fore -Cx $cx -Cy ($cy - $rowGap)
+    Draw-CenteredText -G $g -Text $RowBottom -Font $font -Brush $fore -Cx $cx -Cy ($cy + $rowGap)
 
-        $fmt = New-Object System.Drawing.StringFormat
-        $fmt.Alignment = [System.Drawing.StringAlignment]::Center
-        $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
-        $rect = New-Object System.Drawing.RectangleF($x, $y, $tile, $tile)
-        $g.DrawString($Digits[$i], $font, $fore, $rect, $fmt)
-
-        $fmt.Dispose(); $fore.Dispose(); $font.Dispose()
-    }
-
+    $fore.Dispose(); $font.Dispose()
     $g.Dispose()
     return $bmp
 }
@@ -176,18 +177,44 @@ function New-DibFrame {
 }
 
 foreach ($s in $sizes) {
-    $scaled = New-Object System.Drawing.Bitmap($s, $s, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    $sg = [System.Drawing.Graphics]::FromImage($scaled)
-    $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-    $sg.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-    $sg.Clear([System.Drawing.ColorTranslator]::FromHtml($BoardBg))
-    $sg.DrawImage($master, 0, 0, $s, $s)
-    $sg.Dispose()
+    # Small sizes get a heavier margin: at 16px a 5.5% margin is under one
+    # pixel and the tile looks like it bleeds off the edge.
+    if ($s -le 32) {
+        $small = New-Object System.Drawing.Bitmap($s, $s, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $sg = [System.Drawing.Graphics]::FromImage($small)
+        $sg.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $sg.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+        $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $sg.Clear([System.Drawing.ColorTranslator]::FromHtml($BoardBg))
+        $m = [Math]::Max(1, [int]($s * 0.06))
+        $t = $s - 2 * $m
+        $p = New-RoundedRectPath -X $m -Y $m -W $t -H $t -R ([float]($t * 0.18))
+        $b = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($TileBg))
+        $sg.FillPath($b, $p)
+        $b.Dispose(); $p.Dispose()
+        $f = New-Object System.Drawing.Font('Segoe UI', [float]($t * 0.46), [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+        $fb = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($DigitColor))
+        $cx = $s / 2.0
+        $cy = $m + $t / 2.0
+        $gap = $t * 0.235
+        Draw-CenteredText -G $sg -Text $RowTop -Font $f -Brush $fb -Cx $cx -Cy ($cy - $gap)
+        Draw-CenteredText -G $sg -Text $RowBottom -Font $f -Brush $fb -Cx $cx -Cy ($cy + $gap)
+        $fb.Dispose(); $f.Dispose(); $sg.Dispose()
+        $frame = New-DibFrame -Bitmap $small
+        $small.Dispose()
+    } else {
+        $scaled = New-Object System.Drawing.Bitmap($s, $s, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $sg = [System.Drawing.Graphics]::FromImage($scaled)
+        $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $sg.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $sg.Clear([System.Drawing.ColorTranslator]::FromHtml($BoardBg))
+        $sg.DrawImage($master, 0, 0, $s, $s)
+        $sg.Dispose()
+        $frame = New-DibFrame -Bitmap $scaled
+        $scaled.Dispose()
+    }
 
-    $frame = New-DibFrame -Bitmap $scaled
     $frames += , @{ Size = $s; Bytes = $frame.Bytes; ImageSize = $frame.ImageSize }
-    $scaled.Dispose()
-
     Write-Host ("  {0}x{0}  ({1} byte DIB)" -f $s, $frame.Bytes.Length)
 }
 $master.Dispose()
@@ -202,8 +229,6 @@ $bw.Write([UInt16]1)                 # type 1 = icon
 $bw.Write([UInt16]$frames.Count)     # image count
 
 # Width/height in a directory entry are single bytes; 256 is encoded as 0.
-# For DIB frames the "bytes in resource" field counts the payload only, while
-# "image size" is the BITMAPINFOHEADER size field (header + pixels + mask).
 $offset = 6 + 16 * $frames.Count
 foreach ($f in $frames) {
     $dim = if ($f.Size -ge 256) { 0 } else { $f.Size }
