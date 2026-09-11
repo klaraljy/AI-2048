@@ -48,8 +48,13 @@ benchmarks/raw/
 *.profdata
 
 # 训练权重：体积可达数百 MB，不进版本管理。
-# 获取/再生成方式写在 docs/ 里，不得静默提交大文件。
+# 获取/再生成方式写在 engine/models/README.md 里，不得静默提交大文件。
 engine/models/
+# 但那个说明本身要进版本管理 —— 父目录被忽略时子文件默认也进不去，
+# 所以要先取消忽略目录（用 /* 只放行一层，不递归）再放行文件。
+!engine/models/
+engine/models/*
+!engine/models/README.md
 *.weights
 *.w
 *.bin

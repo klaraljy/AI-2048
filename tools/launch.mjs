@@ -68,9 +68,25 @@ function main() {
 
   killStaleEngines();
 
+  // 可选：用训练好的 n-tuple 权重做叶子评估。
+  //
+  // 设了 AI2048_NET=<权重路径> 才启用，默认不设 —— 也就是默认仍是手写启发式，
+  // 与历史基准一致。理由：实测学习权重目前比手写启发式**弱**（d7 17,430
+  // 对 d4 42,792），默认切过去等于让用户莫名其妙地变弱。它现在的价值是
+  // 便宜和可训练，不是更强。想试的人显式打开。
+  //
+  // 权重文件是 `ai2048-cli train --out <路径>` 的产物。仓库不收录（体积 +
+  // 可再生成），所以路径由使用者自己给。
+  const engineArgs = ['--port', String(ENGINE_PORT)];
+  const netFile = process.env.AI2048_NET;
+  if (netFile && netFile.trim() !== '') {
+    engineArgs.push('--net-file', netFile.trim());
+    console.log(`  叶子评估：学习权重 ${netFile.trim()}`);
+  }
+
   // 引擎输出直接进本窗口：这样"引擎报什么错"和"前端在等什么"在同一个地方，
   // 排查时不用在两个窗口之间来回看。
-  const engine = spawn(ENGINE_EXE, ['--port', String(ENGINE_PORT)], {
+  const engine = spawn(ENGINE_EXE, engineArgs, {
     cwd: ROOT,
     stdio: 'inherit',
   });
