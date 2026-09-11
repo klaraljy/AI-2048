@@ -138,7 +138,8 @@ struct Options {
     } else if (arg == "--stdin") {
       options->move_stdin = true;
     } else if (arg == "--weights") {
-      // 形如 empty=270,empty_late=700,mono=47,smooth=32,merge=18,corner=2200,snake=0.35,maxtile=12
+      // 形如
+      // empty=400,empty_late=700,mono=250,smooth=32,merge=30,corner=2200,snake=15,maxtile=0,cc=100
       // 用于自动调参：每次用一整套权重跑一批对局，比较分数。
       std::string spec;
       if (!take(&spec)) return false;

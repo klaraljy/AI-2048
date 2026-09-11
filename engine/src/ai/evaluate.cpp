@@ -20,12 +20,121 @@ namespace {
 //
 // 它把"行内单调 + 大牌靠左上角 + 尽量不留孔洞"这三件事编码成一个线性模板，
 // 实现成本极低，在浅深度下比通用启发式更鲁棒。
-constexpr std::array<int, kCellCount> kSnakeWeights = {
-    16, 15, 14, 13, 9, 10, 11, 12, 8, 7, 6, 5, 1, 2, 3, 4,
+// ---------------------------------------------------------------------------
+// 蛇形模板（借鉴参考实现的 snakeScore，但补齐了它最关键的一点：**四套模板**）
+//
+// 思路：把"大牌沿一条不交叉的路径从角落蜿蜒排开"编码成一个线性模板，
+// 每格一个权重，越靠近锚点角落的路径权重越高。
+//
+// 单一模板是不够的 —— 这是之前的实现缺陷：模板锚定左上角，
+// 而最大块实际在别的角时，这个模板等于在奖励**错误的形状**，
+// 贡献接近于噪声。参考实现的做法是四角各一套，并按当前最大块的位置
+// 自动挑一套（chooseBestAnchor），这里照做。
+//
+// 权重是 1..16 的一个排列，和恒为 136。用**实际值**（而不是指数）相乘，
+// 这一点与参考实现一致：分数最大化的本质是把大牌放在高权重路径上，
+// 用指数会让大牌之间几乎无差别（11 与 12 只差 1），蛇形就失去了意义。
+// ---------------------------------------------------------------------------
+
+/** 蛇形路径的权重，行优先给出，从指定角开始蜿蜒。 */
+struct SnakeTemplate {
+  int row0 = 0;  // 锚点行：0 或 3
+  int col0 = 0;  // 锚点列：0 或 3
+  std::array<int, kCellCount> weights{};
 };
 
-constexpr int kSnakeWeightSum =
-    16 + 15 + 14 + 13 + 9 + 10 + 11 + 12 + 8 + 7 + 6 + 5 + 1 + 2 + 3 + 4;
+/**
+ * 生成一套蛇形模板。
+ *
+ * 路径形状：从 (row0, col0) 出发，先在**首行**横着走满 4 格，
+ * 下移一行，再反向走回来，如此往复 —— 这样每行内部是单调的，
+ * 行与行之间用一个"折返"连接，整条路径不交叉。
+ */
+[[nodiscard]] constexpr SnakeTemplate MakeSnakeTemplate(int row0, int col0) {
+  SnakeTemplate t;
+  t.row0 = row0;
+  t.col0 = col0;
+  const int row_step = row0 == 0 ? 1 : -1;
+  const int start_col = col0;
+  const int col_step = col0 == 0 ? 1 : -1;
+
+  // 权重 16 在锚点角，沿路径递减到 1。
+  int weight = 16;
+  for (int i = 0; i < kBoardSize; ++i) {
+    const int row = row0 + i * row_step;
+    for (int j = 0; j < kBoardSize; ++j) {
+      // 偶数行顺着走，奇数行反着走 → 蛇形
+      const int jj = (i % 2 == 0) ? j : (kBoardSize - 1 - j);
+      const int col = start_col + jj * col_step;
+      t.weights[static_cast<std::size_t>(row * kBoardSize + col)] = weight--;
+    }
+  }
+  return t;
+}
+
+inline constexpr SnakeTemplate kSnakeTopLeft = MakeSnakeTemplate(0, 0);
+inline constexpr SnakeTemplate kSnakeTopRight = MakeSnakeTemplate(0, kBoardSize - 1);
+inline constexpr SnakeTemplate kSnakeBottomLeft = MakeSnakeTemplate(kBoardSize - 1, 0);
+inline constexpr SnakeTemplate kSnakeBottomRight =
+    MakeSnakeTemplate(kBoardSize - 1, kBoardSize - 1);
+
+/** 权重和恒为 136，用它归一化，使权重系数的量级与其它项可比。 */
+inline constexpr int kSnakeWeightSum = 16 * 17 / 2;  // = 136
+
+/**
+ * 选锚点：优先取**最大块所在的那个角**；最大块不在角上时，
+ * 取"蛇形分最高"的角（也就是当前排布最接近哪个角的形状）。
+ *
+ * 参考实现用的是 cornerControl×1200 + snake×0.018 + edge×6 + sticky。
+ * 这里只保留前两项里最本质的部分：
+ *   - 最大块在角上 → 直接用它（这一条最重要，也最确定）
+ *   - 否则比 snake 原始和（未归一化），选形状最接近的
+ * 不引入 sticky：那是"锚点粘滞"，属于跨步状态，会破坏评估函数的纯函数性
+ * （同一盘面必须给同一分，否则置换表会出错）。
+ */
+[[nodiscard]] const SnakeTemplate& ChooseSnakeTemplate(std::uint64_t board) {
+  int max_exponent = 0;
+  int max_index = -1;
+  for (int index = 0; index < kCellCount; ++index) {
+    const int exponent = GetExponent(board, index);
+    if (exponent > max_exponent) {
+      max_exponent = exponent;
+      max_index = index;
+    }
+  }
+
+  if (max_index >= 0) {
+    const int row = max_index / kBoardSize;
+    const int col = max_index % kBoardSize;
+    const bool top = row == 0;
+    const bool bottom = row == kBoardSize - 1;
+    const bool left = col == 0;
+    const bool right = col == kBoardSize - 1;
+    if (top && left) return kSnakeTopLeft;
+    if (top && right) return kSnakeTopRight;
+    if (bottom && left) return kSnakeBottomLeft;
+    if (bottom && right) return kSnakeBottomRight;
+  }
+
+  // 最大块不在角上：选蛇形原始和最大的那套模板。
+  const std::array<const SnakeTemplate*, 4> candidates = {&kSnakeTopLeft, &kSnakeTopRight,
+                                                          &kSnakeBottomLeft, &kSnakeBottomRight};
+  const SnakeTemplate* best = candidates[0];
+  double best_sum = -1.0;
+  for (const SnakeTemplate* candidate : candidates) {
+    double sum = 0.0;
+    for (int index = 0; index < kCellCount; ++index) {
+      const std::uint64_t value = ExponentToValue(GetExponent(board, index));
+      sum += static_cast<double>(value) *
+             static_cast<double>(candidate->weights[static_cast<std::size_t>(index)]);
+    }
+    if (sum > best_sum) {
+      best_sum = sum;
+      best = candidate;
+    }
+  }
+  return *best;
+}
 
 // 单调性按"牌面等级"加权：相邻两格等级差越大、且方向与单调方向相反，罚得越重。
 // 让大数字的不单调被重罚，是强启发式的关键细节 ——
@@ -167,7 +276,11 @@ struct RawTerms {
   }
 
   // 蛇形 + 空格 + 最大牌位置
-  int snake_sum = 0;
+  //
+  // 蛇形按**实际值**累加（不是指数）—— 见 kSnakeWeights 上方的说明。
+  // 锚点由 ChooseSnakeTemplate 自动选，所以最大块在哪个角都能正确评估。
+  const SnakeTemplate& snake_template = ChooseSnakeTemplate(board);
+  double snake_sum = 0.0;
   int max_index = 0;
   for (int index = 0; index < kCellCount; ++index) {
     const int exponent = GetExponent(board, index);
@@ -175,13 +288,15 @@ struct RawTerms {
       ++terms.empty_cells;
       continue;
     }
-    snake_sum += exponent * kSnakeWeights[static_cast<std::size_t>(index)];
+    snake_sum += static_cast<double>(ExponentToValue(exponent)) *
+                 static_cast<double>(snake_template.weights[static_cast<std::size_t>(index)]);
     if (exponent > terms.max_exponent) {
       terms.max_exponent = exponent;
       max_index = index;
     }
   }
-  terms.snake = static_cast<float>(snake_sum) / static_cast<float>(kSnakeWeightSum);
+  // 归一化到"每格平均"的量级，避免权重系数必须写得很小才不压过其它项。
+  terms.snake = static_cast<float>(snake_sum / kSnakeWeightSum);
 
   terms.max_row = max_index / kBoardSize;
   terms.max_col = max_index % kBoardSize;
