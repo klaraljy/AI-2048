@@ -254,15 +254,55 @@ node tools\static-server.mjs --engine ws://127.0.0.1:8765 --open
 
 > ⚠️ 服务端**没有任何鉴权**，默认只监听回环地址。把它改到外部地址等于把 CPU 交出去。
 
-### 批处理文件的两个硬要求（都实测踩过）
+### 批处理文件的硬要求：**纯 ASCII + CRLF**（三条都是实测踩出来的）
 
-`start-ai2048.bat` 必须保存为 **UTF-8 无 BOM + CRLF**：
+`start-ai2048.bat` 有两条**互相独立**的雷，踩过两次，报错都极难从现象反推。
 
-1. **无 BOM，且开头 `chcp 65001`** → 中文正常。写成 GBK 反而乱码。
-2. **必须是 CRLF。** 用 LF 时 `cmd` 会把命令从中间劈开，报出
-   `'rlevel' is not recognized as an internal or external command`
-   这种莫名其妙的错（`if errorlevel` 被截断了）—— 与内容毫无关系的报错，
-   极难从现象反推。
+#### ① 文件里不能有任何非 ASCII 字符
+
+**这条比"无 BOM + CRLF"更根本，也是最初那条记录漏掉的。**
+
+`cmd.exe` 执行 `.bat` 时按**字节偏移**在文件里定位，而且**每执行一条命令都要重新定位**。
+文件第 2 行是 `chcp 65001`（切到 UTF-8）。一旦切了代码页，
+cmd 的偏移计算与文件里的**多字节 UTF-8 序列**就对不上了 ——
+它会落在某个字符的中间，把本来无害的 `rem` 注释行**从中间劈开当命令执行**。
+
+实测现象（报错碎片全部来自批处理自己的中文注释头）：
+
+```text
+'可靠得多，能把子进程收干净。' is not recognized as an internal or external command
+'→' is not recognized as an internal or external command
+'vel'' is not recognized as an internal or external command
+```
+
+注意 `'vel''` 这个碎片 —— 它来自 `if errorlevel` 的后半截。
+**碎片式报错几乎一定是偏移错位，不是命令写错了。**
+
+**所以中文说明一律不写在 `.bat` 里**，放到 `tools\launch.mjs`（JS 无此限制）。
+批处理只留 ASCII：命令、标签、英文注释。
+
+#### ② 必须是 CRLF
+
+用 LF 时同样会被从中间劈开，报 `'rlevel' is not recognized`
+（`if errorlevel` 被截断）—— 与内容毫无关系的报错。
+
+#### ③ 无 BOM
+
+带 BOM 时 `@echo off` 会被读成乱码命令，报 `'@echo' is not recognized`。
+
+#### 快速自检
+
+```powershell
+$p = "start-ai2048.bat"
+$b = [System.IO.File]::ReadAllBytes($p)
+$t = [System.IO.File]::ReadAllText($p)
+"BOM      : " + $(if ($b[0] -eq 0xEF) { "有 ❌" } else { "无 ✅" })
+"裸 LF    : " + ([regex]::Matches($t, "(?<!`r)`n")).Count + "  (必须为 0)"
+"非 ASCII : " + ([regex]::Matches($t, '[^\x00-\x7F]')).Count + "  (必须为 0)"
+```
+
+> 注意 `write` 工具写出来的是 **LF**，用它改完 `.bat` 必须手工转 CRLF：
+> `$t.Replace("`r`n","`n").Replace("`n","`r`n")`（先归一再转，否则会写出 CRCRLF）。
 
 ### ⛔ 长任务：杀进程前必须确认是谁（踩过两次）
 

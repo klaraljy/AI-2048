@@ -4,35 +4,53 @@ setlocal
 cd /d "%~dp0"
 
 rem ===========================================================================
-rem  AI-2048 一键启动：双击本文件即可开始玩。
+rem  AI-2048 one-click launcher. Double-click this file to play.
 rem
-rem  真正的启动逻辑在 tools\launch.mjs —— 放在那里是因为批处理在被强制结束
-rem  （用户直接叉掉窗口）时收尾语句根本不会执行，引擎会留在后台。
-rem  Node 的 exit / SIGINT 处理可靠得多，能把子进程收干净。
+rem  This file MUST stay pure ASCII. That is not a style preference.
 rem
-rem  本文件只负责：切代码页、检查 node、把控制权交给启动器、别让窗口闪退。
+rem  cmd.exe executes a .bat by seeking through the file by BYTE OFFSET, and it
+rem  re-seeks after every command. The "chcp 65001" above switches the console
+rem  to UTF-8. Once that happens, cmd's offset arithmetic and the file's
+rem  multi-byte UTF-8 sequences disagree: it lands mid-character and starts
+rem  executing fragments of otherwise harmless "rem" lines as commands.
 rem
-rem  注意：本文件必须保存为 **UTF-8 无 BOM + CRLF**。
-rem    - 无 BOM 且开头 chcp 65001 → 中文正常（GBK 反而乱码，已实测）
-rem    - 必须是 CRLF：用 LF 时 cmd 会把命令从中间劈开，
-rem      报出 'rlevel' is not recognized 这种莫名其妙的错
+rem  Real symptom observed:
+rem      'vel'' is not recognized as an internal or external command
+rem      '<fragment of a Chinese comment>' is not recognized ...
+rem
+rem  Those fragments came from comments in THIS header. Keeping the file ASCII
+rem  removes the whole failure class: no multi-byte sequences, nothing for the
+rem  offset arithmetic to get wrong, and it behaves the same under every code
+rem  page and locale.
+rem
+rem  The same reasoning already applies to the sibling lesson in the project
+rem  notes about LF line endings, which produced the equally cryptic
+rem  "'rlevel' is not recognized". Line endings here are CRLF.
+rem
+rem  The Chinese explanation of what this script does lives in
+rem  tools\launch.mjs, which is JavaScript and has no such restriction.
 rem ===========================================================================
 
 where node >nul 2>nul
 if errorlevel 1 (
   echo.
-  echo   [错误] 找不到 node。请安装 Node.js，或把它加入 PATH。
+  echo   [ERROR] Node.js not found. Install Node.js, or add it to PATH.
   echo.
   pause
   exit /b 1
 )
 
+rem All real work happens in launch.mjs: it starts the engine and the static
+rem server, opens the browser, and -- importantly -- cleans up both child
+rem processes on exit. A .bat cannot do that reliably, because when the user
+rem force-closes the window its remaining statements never run and the engine
+rem is left behind. Node's exit / SIGINT handling is dependable.
 node tools\launch.mjs
 set "EXITCODE=%ERRORLEVEL%"
 
 echo.
 if not "%EXITCODE%"=="0" (
-  echo   启动器以代码 %EXITCODE% 结束。
+  echo   Launcher exited with code %EXITCODE%.
   echo.
 )
 pause
