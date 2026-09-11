@@ -92,29 +92,29 @@ std::array<double, kCellCount> SpawnWeights(std::uint64_t board, Difficulty diff
   } else if (difficulty == Difficulty::kHard) {
     constexpr std::array<std::array<int, 2>, 4> kOffsets = {{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
     // 与生成规则一致：**按等级从高到低**找第一个"四周有空位"的方块。
-    // 只看最大块是不够的 —— 它在残局常被围死，而偏置本该落在
-    // "还有空位的大块"旁边，否则残局里这条规则等于不生效。
+    //
+    // 两个必须做对的地方（都踩过）：
+    //   1. 不能只看最大块 —— 它在残局常被围死，而偏置本该落在
+    //      "还有空位的大块"旁边，否则残局里这条规则等于不生效。
+    //   2. **每个等级要检查它的所有方块**，不能只看行优先第一个 ——
+    //      否则只有位置最靠前的方块能触发，表现成"新方块全挤在左上角"。
     for (int exponent = MaxExponent(board); exponent >= 1 && candidate_count == 0; --exponent) {
-      int row = -1;
-      int col = -1;
-      for (int index = 0; index < kCellCount; ++index) {
-        if (GetExponent(board, index) == exponent) {
-          row = index / kBoardSize;
-          col = index % kBoardSize;
-          break;  // 行优先第一个
-        }
-      }
-      if (row < 0) continue;  // 盘面上没有这个等级
+      for (int index = 0; index < kCellCount && candidate_count == 0; ++index) {
+        if (GetExponent(board, index) != exponent) continue;
 
-      for (const auto& offset : kOffsets) {
-        const int r = row + offset[0];
-        const int c = col + offset[1];
-        if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
-        const int index = r * kBoardSize + c;
-        if (GetExponent(board, index) == 0) {
-          candidates[static_cast<std::size_t>(candidate_count)] = index;
-          ++candidate_count;
+        const int row = index / kBoardSize;
+        const int col = index % kBoardSize;
+        for (const auto& offset : kOffsets) {
+          const int r = row + offset[0];
+          const int c = col + offset[1];
+          if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
+          const int neighbour = r * kBoardSize + c;
+          if (GetExponent(board, neighbour) == 0) {
+            candidates[static_cast<std::size_t>(candidate_count)] = neighbour;
+            ++candidate_count;
+          }
         }
+        // 这个方块被围死就继续看同等级的下一个
       }
     }
     bias = static_cast<double>(kHardNearMaxNumerator) / static_cast<double>(kDifficultyDenominator);

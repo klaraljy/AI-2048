@@ -338,8 +338,11 @@ export class Game {
    * 例如 2048 被围死、但 128 旁边有空，就放在 128 旁边 ——
    * 只在最大块上找的话，残局里偏置几乎永远不触发。
    *
-   * 多个同值方块取**行优先第一个**；邻居顺序固定「上、下、左、右」——
-   * 顺序决定"取第 k 个"的结果，改了就会与引擎分叉。
+   * ⚠️ 必须检查该等级的**每一个**方块，不能只看行优先第一个就跳到下一级。
+   * 踩过坑：那样只有每个等级里位置最靠前的方块能触发偏置，
+   * 棋盘上大块集中在左上时表现成"新方块全挤在左上角"。
+   *
+   * 邻居顺序固定「上、下、左、右」—— 顺序决定"取第 k 个"的结果。
    */
   _emptyCellsNextToLargestMovable(empties) {
     const emptySet = new Set(empties.map(([r, c]) => r * SIZE + c));
@@ -352,27 +355,20 @@ export class Game {
     }
 
     for (let exponent = maxExponent; exponent >= 1; exponent--) {
-      let row = -1;
-      let col = -1;
-      for (let r = 0; r < SIZE && row < 0; r++) {
+      // 该等级的**每一个**方块都要看，被围死的继续看下一个
+      for (let r = 0; r < SIZE; r++) {
         for (let c = 0; c < SIZE; c++) {
-          if (this.board[r][c] === exponent) {
-            row = r;
-            col = c;
-            break; // 行优先第一个
-          }
+          if (this.board[r][c] !== exponent) continue;
+          const wanted = [
+            [r - 1, c],
+            [r + 1, c],
+            [r, c - 1],
+            [r, c + 1],
+          ];
+          const result = wanted.filter(([wr, wc]) => isFree(wr, wc));
+          if (result.length > 0) return result; // 这个方块旁边有空位 —— 就是它
         }
       }
-      if (row < 0) continue; // 盘面上没有这个等级
-
-      const wanted = [
-        [row - 1, col],
-        [row + 1, col],
-        [row, col - 1],
-        [row, col + 1],
-      ];
-      const result = wanted.filter(([r, c]) => isFree(r, c));
-      if (result.length > 0) return result; // 这个等级旁边有空位 —— 就是它
     }
     return [];
   }

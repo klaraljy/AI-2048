@@ -62,8 +62,12 @@
         <button id="ai-auto" type="button" class="ghost" title="AI 自动演示">
           <span aria-hidden="true">▶</span>
         </button>
+        <!--
+          单步用 ⇥ 而不是 ⏭：⏭ 在播放器里是"快进到下一段"，
+          容易被理解成"加速播放"，而这里其实是"让 AI 走一步"。
+        -->
         <button id="ai-step" type="button" class="ghost" title="AI 走一步（空格）">
-          <span aria-hidden="true">⏭</span>
+          <span aria-hidden="true">⇥</span>
         </button>
         <button id="mute" type="button" class="ghost" aria-pressed="false" title="音效（M）">
           <span aria-hidden="true">🔊</span>

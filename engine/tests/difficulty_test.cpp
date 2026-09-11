@@ -267,6 +267,35 @@ struct Sample {
   return EncodeBoard({1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1});
 }
 
+/**
+ * **两个最大块：行优先第一个被围死，第二个旁边有空位。**
+ * 这是"每级只看第一个方块"那个缺陷的**回归测试盘面**。
+ *
+ * 布局（值，. 表示空）：
+ *      8  2  4  .
+ *      2  4  2  .
+ *      4  2  2  8
+ *      2  4  2  4
+ *
+ * (0,0) 的 8 被 (0,1)=2 与 (1,0)=2 围死；
+ * (2,3) 的 8 上方 (1,3) 是空的 → **它才是可放的那个**，偏置应落在 (1,3)。
+ *
+ * 缺陷版本只取行优先第一个 8（即 (0,0)），发现它没有空邻格就**直接跳到
+ * 下一等级**，于是偏置落到别处甚至关闭 —— 表现出来就是
+ * "新方块全挤在左上角"，正是用户报的那个现象。
+ *
+ * 之前的盘面为什么没抓到：它们每个等级只有一个方块，
+ * 所以"只看第一个"和"看全部"结果相同。回归测试必须造出**同等级多个**。
+ */
+[[nodiscard]] std::uint64_t BoardTwoMaxOneTrapped() {
+  return EncodeBoard({
+      3, 1, 2, 0,  // 8 2 4 .
+      1, 2, 1, 0,  // 2 4 2 .
+      2, 1, 1, 3,  // 4 2 2 8
+      1, 2, 1, 2,  // 2 4 2 4
+  });
+}
+
 // ---------------------------------------------------------------------------
 // 盘面自检（盘面写错时，第一条失败的断言必须指出"是盘面错了"）
 // ---------------------------------------------------------------------------
@@ -420,6 +449,62 @@ TEST(DifficultySpawn, EasyFallsBackWhenAllCornersOccupied) {
   EXPECT_LT(ChiSquareUniform(samples, 12), CriticalChiSquare(11)) << "退路应当是均匀的";
 }
 
+TEST(DifficultySpawn, HardChecksEveryTileOfTheLevelNotJustTheFirst) {
+  // **回归测试**：曾经只检查每个等级里行优先的第一个方块，
+  // 它被围死就跳到下一等级 —— 于是同等级的其它方块再有机会也不看。
+  // 表现：新方块全挤在左上角（用户报的现象）。
+  //
+  // 盘面里有两个 8，(0,0) 那个被围死，(2,3) 那个上方 (1,3) 是空的。
+  const std::uint64_t board = BoardTwoMaxOneTrapped();
+
+  // 盘面自检
+  MaxCell first{};
+  {
+    int row = -1;
+    int col = -1;
+    for (int index = 0; index < kCellCount; ++index) {
+      if (GetExponent(board, index) == 3) {
+        row = index / kBoardSize;
+        col = index % kBoardSize;
+        break;
+      }
+    }
+    first.row = row;
+    first.col = col;
+    first.found = row >= 0;
+  }
+  ASSERT_TRUE(first.found);
+  EXPECT_EQ(first.row, 0) << "自检：行优先第一个 8 应当在 (0,0)";
+  EXPECT_EQ(first.col, 0);
+  // 第一个 8 必须被围死
+  EXPECT_NE(GetExponent(board, 1), 0) << "自检：(0,1) 必须被占";
+  EXPECT_NE(GetExponent(board, kBoardSize), 0) << "自检：(1,0) 必须被占";
+  // 第二个 8 的邻居必须有一个空位
+  const int second_max = 2 * kBoardSize + 3;
+  ASSERT_EQ(GetExponent(board, second_max), 3) << "自检：(2,3) 应当是第二个 8";
+  const int biased_index = 1 * kBoardSize + 3;  // (1,3)
+  ASSERT_EQ(GetExponent(board, biased_index), 0) << "自检：(1,3) 应当是空位";
+
+  // 引擎认定的"可放等级"应当是 3（也就是那个没被围死的 8）
+  EXPECT_EQ(LargestMovableExponent(board), 3)
+      << "应当认为等级 3 仍然可放 —— 因为存在第二个 8 有空位";
+
+  // 落点分布：偏置目标 (1,3) 的概率应显著高于其它空格
+  const std::vector<Sample> samples = SampleSpawns(Difficulty::kHard, board, kTrials);
+  int biased_hits = 0;
+  int other_hits = 0;
+  for (const Sample& sample : samples) {
+    if (sample.index == biased_index) {
+      biased_hits += sample.count;
+    } else {
+      other_hits += sample.count;
+    }
+  }
+  EXPECT_GT(biased_hits, other_hits * 4)
+      << "偏置格只拿到 " << biased_hits << " 而其它格共 " << other_hits
+      << " —— 说明没有检查同等级的第二个方块，又退回只看第一个了";
+}
+
 TEST(DifficultySpawn, HardFallsBackToNextLargestMovableTile) {
   // 规则（用户明确指示）：**按等级从高到低**找第一个"四周有空位"的方块，
   // 在它的相邻空格里放新块。例如 2048 被围死、但 128 旁边有空，就放在 128 旁边。
@@ -428,8 +513,7 @@ TEST(DifficultySpawn, HardFallsBackToNextLargestMovableTile) {
   // 而 (1,2) 是空位且挨着 4 —— 偏置应当落到它上面，而不是关闭。
   const std::uint64_t board = BoardSecondaryMovable();
   ASSERT_EQ(EmptyNeighboursOfMax(board), 0) << "盘面自检：最大块四邻必须全被占";
-  ASSERT_EQ(LargestMovableExponent(board), 2)
-      << "盘面自检：应当退到等级 2（也就是 4 那一档）";
+  ASSERT_EQ(LargestMovableExponent(board), 2) << "盘面自检：应当退到等级 2（也就是 4 那一档）";
 
   // 偏置位置直接写出来 —— **而且必须核对它确实挨着那个等级**。
   // 我在这里错过两次：先把 (2,2) 当成候选，但它的邻居是 2（下标 9），不是 4。
@@ -775,8 +859,7 @@ TEST(DifficultyWorldModel, HardBiasMovesToSecondaryTileWhenMaxIsBlocked) {
   // 于是 AI 严重低估那片区域的风险。
   const std::uint64_t board = BoardSecondaryMovable();
   ASSERT_EQ(EmptyNeighboursOfMax(board), 0) << "盘面自检：最大块四邻必须全被占";
-  ASSERT_EQ(LargestMovableExponent(board), 2)
-      << "盘面自检：应当退到等级 2（4 那一档）";
+  ASSERT_EQ(LargestMovableExponent(board), 2) << "盘面自检：应当退到等级 2（4 那一档）";
 
   const std::array<double, kCellCount> weights = SpawnWeights(board, Difficulty::kHard);
   const int empties = EmptyCount(board);
@@ -789,9 +872,8 @@ TEST(DifficultyWorldModel, HardBiasMovesToSecondaryTileWhenMaxIsBlocked) {
 
   const double biased = weights[kBiasedIndex];
   const double others = weights[2 * kBoardSize + 2];  // (2,2)，不在偏置里
-  EXPECT_GT(biased, others * 3.0)
-      << "偏置格 " << biased << " 应显著高于非偏置格 " << others
-      << " —— 世界模型没有跟着规则退到次级大块";
+  EXPECT_GT(biased, others * 3.0) << "偏置格 " << biased << " 应显著高于非偏置格 " << others
+                                  << " —— 世界模型没有跟着规则退到次级大块";
   EXPECT_NEAR(biased, 0.8 + 0.2 / static_cast<double>(empties), 1e-9);
   EXPECT_NEAR(others, 0.2 / static_cast<double>(empties), 1e-9);
 }

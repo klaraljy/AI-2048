@@ -312,7 +312,7 @@ function startAuto() {
   if (autoRunning) return;
   autoRunning = true;
   el.aiAuto.classList.add('active');
-  el.aiAuto.textContent = '■';
+  el.aiAuto.textContent = '⏸';
   el.aiAuto.title = '停止 AI 演示';
   refreshControls();
 

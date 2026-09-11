@@ -52,42 +52,44 @@ inline constexpr std::array<int, 4> kCornerIndices = {0, 3, 12, 15};
  * 多个同值方块时取**行优先第一个**（规则必须确定，否则同种子不可复现）。
  * 邻居顺序固定为「上、下、左、右」—— 它决定"取第 k 个"的结果。
  */
-[[nodiscard]] std::array<int, kCellCount> CollectEmptyNextToLargestMovable(
-    std::uint64_t board, int* count) noexcept {
+[[nodiscard]] std::array<int, kCellCount> CollectEmptyNextToLargestMovable(std::uint64_t board,
+                                                                           int* count) noexcept {
   std::array<int, kCellCount> cells{};
   *count = 0;
 
   constexpr std::array<std::array<int, 2>, 4> kOffsets = {{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
 
-  // 棋盘最多 16 格，等级最多 kMaxExponent，直接逐级扫描即可，不需要额外数据结构。
+  // 棋盘最多 16 格、等级最多 kMaxExponent，直接逐级扫描即可。
   for (int exponent = MaxExponent(board); exponent >= 1; --exponent) {
-    int row = -1;
-    int col = -1;
+    // **必须检查该等级的每一个方块**，不能只看行优先第一个就跳下一级。
+    //
+    // 这里踩过坑：原先写成"找到第一个该等级的方块 → 检查它的四邻 →
+    // 不管有没有空位都 break 出内层循环"，结果是**只有每个等级里
+    // 位置最靠前的那个方块**能触发偏置。棋盘上大块多集中在左上时，
+    // 表现就是"新方块全挤在左上角"，而规则看上去还"在工作"。
     for (int index = 0; index < kCellCount; ++index) {
-      if (GetExponent(board, index) == exponent) {
-        row = index / kBoardSize;
-        col = index % kBoardSize;
-        break;  // 行优先第一个
-      }
-    }
-    if (row < 0) continue;  // 盘面上没有这个等级
+      if (GetExponent(board, index) != exponent) continue;
 
-    int n = 0;
-    for (const auto& offset : kOffsets) {
-      const int r = row + offset[0];
-      const int c = col + offset[1];
-      if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
-      const int index = r * kBoardSize + c;
-      if (GetExponent(board, index) == 0) {
-        cells[static_cast<std::size_t>(n)] = index;
-        ++n;
+      const int row = index / kBoardSize;
+      const int col = index % kBoardSize;
+      int n = 0;
+      for (const auto& offset : kOffsets) {
+        const int r = row + offset[0];
+        const int c = col + offset[1];
+        if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
+        const int neighbour = r * kBoardSize + c;
+        if (GetExponent(board, neighbour) == 0) {
+          cells[static_cast<std::size_t>(n)] = neighbour;
+          ++n;
+        }
       }
+      if (n > 0) {
+        *count = n;  // 这个方块旁边有空位 —— 就是它
+        return cells;
+      }
+      // 这个方块被围死，继续看**同等级**的下一个
     }
-    if (n > 0) {
-      *count = n;  // 这个等级旁边有空位 —— 就是它
-      return cells;
-    }
-    // 否则继续往下一个等级找
+    // 这个等级的所有方块都被围死，往下一个等级找
   }
 
   return cells;

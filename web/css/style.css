@@ -80,7 +80,8 @@ body {
 
 .score-box {
   min-width: 108px;
-  padding: 7px 14px 9px;
+  /* 下内边距给足：数字滚动的容器有固定高度，padding 不够时底部会被裁 */
+  padding: 7px 14px 11px;
   border-radius: var(--radius);
   background: var(--panel);
   color: var(--panel-text);
@@ -110,11 +111,13 @@ body {
   line-height: 1.3;
 }
 
-/* 滚轮容器：数字在其中滚动，超出部分裁掉 */
+/* 滚轮容器：数字在其中滚动，超出部分裁掉。
+   高度按数字的实际行高给足（24px × 1.3 ≈ 31.2），留 36px —— 之前写成
+   1.35em 是按父级 16px 算的（只有 21.6px），数字底部被裁掉一截。 */
 .score-roll {
   position: relative;
   overflow: hidden;
-  height: 1.35em;
+  height: 36px;
 }
 
 /* 滚出画面的旧数字：绝对定位叠在同一位置，滚完即删 */
@@ -390,31 +393,32 @@ button.active {
   font-size: 13px;
 }
 
-/* ---- 动画 ---- */
+/* ---- 动画 ----
+   关键：keyframes 里的 transform **必须叠加 var(--tile-pos)**。
+   方块的位置是 renderer 用 translate3d 写在 style.transform 上的，
+   如果动画只写 scale()，那动画期间就会**覆盖掉位移** ——
+   方块先闪现在左上角再跳回原位，看起来就是"一闪一闪"。
+   renderer 已经把位置同步写进 --tile-pos，这里照用即可。 */
 @keyframes tile-appear {
   0% {
-    transform: scale(0.2);
     opacity: 0;
-  }
-  70% {
-    transform: scale(1.06);
-    opacity: 1;
+    transform: var(--tile-pos) scale(0.3);
   }
   100% {
-    transform: scale(1);
     opacity: 1;
+    transform: var(--tile-pos) scale(1);
   }
 }
 
 @keyframes tile-merge {
   0% {
-    transform: scale(1);
+    transform: var(--tile-pos) scale(1);
   }
-  45% {
-    transform: scale(1.18);
+  55% {
+    transform: var(--tile-pos) scale(1.18);
   }
   100% {
-    transform: scale(1);
+    transform: var(--tile-pos) scale(1);
   }
 }
 
