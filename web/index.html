@@ -37,6 +37,22 @@
 
       <div class="toolbar">
         <label class="option">
+          <span class="option-label">难度</span>
+          <select id="difficulty"></select>
+        </label>
+        <span class="option" id="difficulty-note"></span>
+      </div>
+
+      <p class="hint sub-hint">
+        「难度」改的是<strong>规则</strong>：新方块落在哪里。与下面的「AI 强度」是两件事 ——
+        难度决定游戏有多难，强度决定 AI 下得多好。
+        <strong>分数不跨难度比较</strong>（简单档分数天然更高）。
+      </p>
+
+      <div class="session-notice hidden" id="difficulty-notice"></div>
+
+      <div class="toolbar">
+        <label class="option">
           <span class="option-label">AI 强度</span>
           <!-- 选项由 config.js 生成，避免参数在 HTML 与 JS 里各写一份而漂移 -->
           <select id="strength"></select>

@@ -106,3 +106,40 @@ export function requestTimeoutMs(spec) {
 export function specFor(value) {
   return STRENGTH[value] ?? STRENGTH.standard;
 }
+
+// ---------------------------------------------------------------------------
+// 难度：改变**新方块出现的位置分布**（属于规则，不属于 AI 强度）
+//
+// 与「AI 强度」是两件完全不同的事，界面上必须分开：
+//   难度 → 改规则，影响**游戏本身有多难**
+//   强度 → 改搜索，影响**AI 下得多好**
+//
+// 参数与引擎的 core/game.h 完全一致，由
+// tests/difficulty-parity.test.mjs 逐位对拍保证。
+//
+// ⚠️ 分数**不跨难度可比**：改的是生成规则，简单档分数天然更高。
+// ---------------------------------------------------------------------------
+export const DIFFICULTY = {
+  easy: { label: '简单', note: '70% 生成在角落' },
+  normal: { label: '中等', note: '全盘随机（标准）' },
+  hard: { label: '困难', note: '80% 生成在最大块旁' },
+};
+
+export const DEFAULT_DIFFICULTY = 'normal';
+
+export function difficultyOptions() {
+  return Object.entries(DIFFICULTY).map(([value, spec]) => ({
+    value,
+    label: spec.label,
+    note: spec.note,
+  }));
+}
+
+/** 难度是不是标准规则。非标准时界面要提示分数不可与基准比较。 */
+export function isStandardDifficulty(value) {
+  return value === DEFAULT_DIFFICULTY;
+}
+
+export function difficultyLabel(value) {
+  return DIFFICULTY[value]?.label ?? DIFFICULTY[DEFAULT_DIFFICULTY].label;
+}

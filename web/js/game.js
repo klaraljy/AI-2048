@@ -8,6 +8,7 @@
 //   - 生成顺序：先决定位置、再决定取值（这个顺序是规则的一部分）
 //   - 90% 出 2、10% 出 4；新块落在**随机空格**
 //   - 非法走子**不消耗随机数**（否则 replay 失效）
+//   - 难度改变**位置分布**（见 spawnIndexFor），不改取值概率
 //
 // 一致性由 tests/parity.test.mjs 与 C++ 的 selfcheck 输出对拍验证。
 
@@ -16,10 +17,43 @@ import { Rng } from './rng.js';
 export const SIZE = 4;
 export const CELLS = SIZE * SIZE;
 
-/** 新方块是 4 的概率（10%）。这是**规则**，不是难度。 */
+/** 新方块是 4 的概率（10%）。这是**规则**，不随难度变化。 */
 const FOUR_NUMERATOR = 1;
 const SPAWN_DENOMINATOR = 10;
 const INITIAL_TILES = 2;
+
+// ---------------------------------------------------------------------------
+// 难度：改变新方块出现的**位置分布**
+//
+// 参数必须与引擎的 core/game.h 完全一致，否则同一难度下前端与引擎会分叉。
+//
+//   easy   70% 落在空角落
+//   normal 全盘均匀（标准 2048）
+//   hard   80% 落在最大方块的相邻空格
+//
+// 两档偏置在"没有可用位置"时退回全盘均匀。
+// ---------------------------------------------------------------------------
+export const DIFFICULTY_EASY = 'easy';
+export const DIFFICULTY_NORMAL = 'normal';
+export const DIFFICULTY_HARD = 'hard';
+
+const EASY_CORNER_NUMERATOR = 7;
+const HARD_NEAR_MAX_NUMERATOR = 8;
+const DIFFICULTY_DENOMINATOR = 10;
+
+/** 四角坐标。顺序与引擎的 kCornerIndices = {0,3,12,15} 一致。 */
+const CORNER_CELLS = [
+  [0, 0],
+  [0, SIZE - 1],
+  [SIZE - 1, 0],
+  [SIZE - 1, SIZE - 1],
+];
+
+function isCorner(row, col) {
+  return (
+    (row === 0 || row === SIZE - 1) && (col === 0 || col === SIZE - 1)
+  );
+}
 
 export const DIRECTION = {
   up: 'up',
@@ -227,9 +261,13 @@ function emptyBoard() {
 
 /** 一局 2048。确定性：同种子 + 同一串方向 → 完全一致的结果。 */
 export class Game {
-  /** @param {number|bigint|string} seed */
-  constructor(seed) {
+  /**
+   * @param {number|bigint|string} seed
+   * @param {string} [difficulty] 'easy' | 'normal' | 'hard'，见 spawnIndexFor。
+   */
+  constructor(seed, difficulty = DIFFICULTY_NORMAL) {
     this.seed = seed;
+    this.difficulty = difficulty;
     this._rng = new Rng(seed);
     this.board = emptyBoard();
     this.score = 0;
@@ -243,7 +281,13 @@ export class Game {
     for (let i = 0; i < INITIAL_TILES; i++) this._spawn();
   }
 
-  /** 生成一个新方块。顺序（先位置、后取值）是规则的一部分，不要改。 */
+  /**
+   * 生成一个新方块。
+   *
+   * **顺序（先位置、后取值）是规则的一部分**，随机数的消耗次数也属于规则 ——
+   * 任何改动都会让所有历史种子集的结果作废，必须与引擎（core/game.cpp 的
+   * SpawnRandomTile）逐行一致，否则前端降级运行时玩的会是另一个游戏。
+   */
   _spawn() {
     const empties = [];
     for (let r = 0; r < SIZE; r++) {
@@ -253,10 +297,80 @@ export class Game {
     }
     if (empties.length === 0) return null;
 
-    const [row, col] = empties[this._rng.nextBounded(empties.length)];
+    // 位置选择。偏向分支会多消耗一次随机数（在候选格里挑一个），
+    // 这是"偏向某个位置集合"的必然代价 —— 不要试图让三档消耗次数相同，
+    // 那只能靠放弃偏置来换。各档内部的确定性由测试保证。
+    const chosen = this._spawnIndexFor(empties);
+    const [row, col] = chosen;
+
     const exponent = this._rng.chance(FOUR_NUMERATOR, SPAWN_DENOMINATOR) ? 2 : 1;
     this.board[row][col] = exponent;
     return { row, col, exponent };
+  }
+
+  /**
+   * 按难度挑一个落点。返回 [row, col]。
+   *
+   * 必须与引擎的 Game::SpawnRandomTile 保持一致 —— **包括 rng 的调用顺序与次数**：
+   *   1. 偏置可用时：先 chance(分子, 10) 抽一次；命中再 nextBounded(候选数) 抽一次
+   *   2. 偏置不可用或未命中：nextBounded(空格数) 抽一次
+   */
+  _spawnIndexFor(empties) {
+    if (this.difficulty === DIFFICULTY_EASY) {
+      const corners = empties.filter(([r, c]) => isCorner(r, c));
+      if (corners.length > 0 && this._rng.chance(EASY_CORNER_NUMERATOR, DIFFICULTY_DENOMINATOR)) {
+        return corners[this._rng.nextBounded(corners.length)];
+      }
+    } else if (this.difficulty === DIFFICULTY_HARD) {
+      const nearMax = this._emptyCellsNextToMax(empties);
+      if (nearMax.length > 0 && this._rng.chance(HARD_NEAR_MAX_NUMERATOR, DIFFICULTY_DENOMINATOR)) {
+        return nearMax[this._rng.nextBounded(nearMax.length)];
+      }
+    }
+    return empties[this._rng.nextBounded(empties.length)];
+  }
+
+  /**
+   * 与**行优先第一个**最大方块上下左右相邻的空格。
+   *
+   * 顺序必须是「上、下、左、右」—— 引擎的 CollectEmptyNextToMax 就是这个顺序，
+   * 它决定了"取第 k 个"的结果。多个最大方块时只认第一个，这也是规则。
+   */
+  _emptyCellsNextToMax(empties) {
+    let maxExponent = 0;
+    for (let r = 0; r < SIZE; r++) {
+      for (let c = 0; c < SIZE; c++) {
+        maxExponent = Math.max(maxExponent, this.board[r][c]);
+      }
+    }
+    if (maxExponent <= 0) return [];
+
+    let maxRow = -1;
+    let maxCol = -1;
+    outer: for (let r = 0; r < SIZE; r++) {
+      for (let c = 0; c < SIZE; c++) {
+        if (this.board[r][c] === maxExponent) {
+          maxRow = r;
+          maxCol = c;
+          break outer;
+        }
+      }
+    }
+    if (maxRow < 0) return [];
+
+    const wanted = [
+      [maxRow - 1, maxCol],
+      [maxRow + 1, maxCol],
+      [maxRow, maxCol - 1],
+      [maxRow, maxCol + 1],
+    ];
+    const result = [];
+    for (const [r, c] of wanted) {
+      if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) continue;
+      // 必须是空格。用 empties 判定而不是 board，保证与"空格列表"完全一致。
+      if (empties.some(([er, ec]) => er === r && ec === c)) result.push([r, c]);
+    }
+    return result;
   }
 
   /**

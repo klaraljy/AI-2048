@@ -21,6 +21,11 @@ import {
   specFor,
   toEngineConfig,
   requestTimeoutMs,
+  difficultyOptions,
+  difficultyLabel,
+  isStandardDifficulty,
+  DIFFICULTY,
+  DEFAULT_DIFFICULTY,
 } from './config.js';
 
 const BEST_KEY = 'ai2048.best';
@@ -51,6 +56,9 @@ const el = {
   best: document.getElementById('best'),
   seed: document.getElementById('seed'),
   seedShown: document.getElementById('seed-shown'),
+  difficulty: document.getElementById('difficulty'),
+  difficultyNote: document.getElementById('difficulty-note'),
+  difficultyNotice: document.getElementById('difficulty-notice'),
   strength: document.getElementById('strength'),
   speed: document.getElementById('speed'),
   newGame: document.getElementById('new-game'),
@@ -297,11 +305,44 @@ function newGame() {
   delete el.seedShown.dataset.forcedSeed;
   const seed = choice === 'random' ? Math.floor(Math.random() * 1e9) : Number(choice);
 
-  game = new Game(seed);
+  // 难度是**规则**的一部分，必须传给 Game —— 不传的话界面选了"简单"
+  // 而生成仍然是全盘随机，用户会以为难度没生效（而且他无法分辨）。
+  game = new Game(seed, currentDifficulty());
   lastMove = null;
   el.seedShown.textContent = `本局种子 ${seed}`;
   renderer.reset(game.board, { score: game.score, best });
+  refreshDifficultyNotice();
   refreshControls();
+}
+
+/** 当前难度。元素缺失或值不认识时退回标准档（绝不悄悄变成别的难度）。 */
+function currentDifficulty() {
+  const value = el.difficulty ? el.difficulty.value : DEFAULT_DIFFICULTY;
+  return DIFFICULTY[value] ? value : DEFAULT_DIFFICULTY;
+}
+
+/**
+ * 非标准难度时在页面上**明确说明**分数不可与基准比较。
+ *
+ * 这一条不能省：难度改的是生成规则，简单档分数天然更高。
+ * 不提示的话，用户会把"简单档刷出的高分"当成 AI 变强了。
+ */
+function refreshDifficultyNotice() {
+  const value = currentDifficulty();
+  if (el.difficultyNote) {
+    el.difficultyNote.textContent = DIFFICULTY[value] ? DIFFICULTY[value].note : '';
+  }
+  if (!el.difficultyNotice) return;
+
+  if (isStandardDifficulty(value)) {
+    el.difficultyNotice.classList.add('hidden');
+    el.difficultyNotice.textContent = '';
+    return;
+  }
+  el.difficultyNotice.textContent =
+    `当前难度「${difficultyLabel(value)}」改的是生成规则，` +
+    `不是标准 2048 —— 本局分数不可与标准难度或历史最高分比较。`;
+  el.difficultyNotice.classList.remove('hidden');
 }
 
 function toggleMute() {
@@ -322,6 +363,7 @@ async function boot() {
   el.mute.textContent = sound.muted ? '音效关' : '音效开';
   el.mute.setAttribute('aria-pressed', sound.muted ? 'true' : 'false');
 
+  if (el.difficulty) fillSelect(el.difficulty, difficultyOptions(), DEFAULT_DIFFICULTY);
   fillSelect(el.strength, strengthOptions(), 'standard');
   fillSelect(el.speed, speedOptions(), 'medium');
 
@@ -354,6 +396,9 @@ async function boot() {
   el.strength.addEventListener('change', () => void applyStrength());
   // 速度只影响下一步之后的间隔，不需要打断正在进行的演示
   el.speed.addEventListener('change', () => {});
+  // 难度是规则的一部分，改档必须重开一局 ——
+  // 否则同一局会前半段一套生成规则、后半段另一套，分数失去意义。
+  el.difficulty.addEventListener('change', () => newGame());
 
   window.addEventListener('resize', () => renderer.relayout());
   window.addEventListener('orientationchange', () => setTimeout(() => renderer.relayout(), 120));

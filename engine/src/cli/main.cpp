@@ -745,8 +745,11 @@ int RunTrace(const Options& options) {
 
   constexpr std::array<Direction, 4> kOrder = {Direction::kLeft, Direction::kDown,
                                                Direction::kRight, Direction::kUp};
+  // 无参数 = 标准 2048。传 --difficulty 才能对拍另两档 ——
+  // 前端实现了三档，所以三档都必须能逐位对拍，不能只验 normal。
+  const ai2048::Difficulty difficulty = options.difficulty;
   for (const std::uint64_t seed : *seeds) {
-    Game game(seed);
+    Game game(seed, difficulty);
     while (!game.game_over()) {
       bool advanced = false;
       for (const Direction direction : kOrder) {

@@ -449,6 +449,22 @@ select {
   display: none;
 }
 
+/* 难度提示：与 .notice 同族，但语气更弱（橙色而非黄色），
+   因为"非标准难度"是一个常态提示，不是警告。 */
+.session-notice {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  background: #fdeee0;
+  color: #9a5b23;
+  border: 1px solid #f5d9bd;
+}
+
+.session-notice.hidden {
+  display: none;
+}
+
 .hint {
   margin-top: 16px;
   font-size: 13px;

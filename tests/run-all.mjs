@@ -22,6 +22,9 @@ const SUITES = [
   // 生成规则必须是标准 2048：在所有空格中等概率，不得偏向角落。
   // 参考实现的「简单难度」就是靠 70% 概率塞角落来放水的，本项目不做。
   ['新方块生成分布（防角落偏好）', 'spawn.test.mjs'],
+  // 三档难度的前端 ↔ 引擎逐位对拍：难度改的是"落点在哪"，
+  // 而降级运行时这件事由 JS 决定，两边不一致就变成两个游戏。
+  ['难度规则（前端 ↔ 引擎逐位对拍）', 'difficulty-parity.test.mjs'],
   ['JSON 解析器（与 JSON.parse 对拍）', 'json-parity.test.mjs'],
   ['渲染与动画（headless）', 'renderer.test.mjs'],
   ['输入与输入锁', 'input.test.mjs'],
