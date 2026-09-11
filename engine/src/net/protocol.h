@@ -38,6 +38,12 @@ namespace ai2048::net {
 struct Session {
   enum class Phase { kHandshake, kOpen };
 
+  // 显式构造函数：Session 含不可移动的 TranspositionTable，
+  // 所以要把"带默认搜索配置"的会话**原地构造**出来，
+  // 而不是先造一个再移动/赋值（那两种都会被删除的函数挡住）。
+  Session() = default;
+  explicit Session(const ai2048::SearchConfig& defaults) : config(defaults) {}
+
   Phase phase = Phase::kHandshake;
   std::string buffer;  // 握手阶段是 HTTP 文本，之后是帧字节
   bool close_after_send = false;
@@ -54,7 +60,15 @@ struct Session {
 /** 协议处理器：把 socket 事件翻译成引擎调用与响应。 */
 class ProtocolHandler {
  public:
-  ProtocolHandler(SocketServer* server, std::string* log_prefix);
+  /**
+   * @param defaults 新会话的初始搜索配置（深度、叶子评估等）。
+   *
+   * 每个会话会**拷贝**一份，所以之后通过 configure 改深度只影响那一个会话。
+   * 注意叶子评估的 context 是指向外部网络的裸指针 —— 调用方必须保证
+   * 那个网络比本处理器活得久（服务端在主函数里持有 shared_ptr）。
+   */
+  ProtocolHandler(SocketServer* server, std::string* log_prefix,
+                  const ai2048::SearchConfig& defaults = ai2048::SearchConfig{});
 
   /** 连上时的回调。 */
   void OnOpen(ConnectionId id);
@@ -78,6 +92,8 @@ class ProtocolHandler {
 
   SocketServer* server_;
   std::map<ConnectionId, Session> sessions_;
+  /** 新会话的初始配置（含叶子评估绑定），见构造函数说明。 */
+  ai2048::SearchConfig defaults_;
 };
 
 }  // namespace ai2048::net

@@ -82,19 +82,28 @@ ai2048_apply_project_flags(ai2048_core)
 # TD 训练的并行化需要 std::thread，塞进 core 就违反了那条约束。
 #
 # 拆开之后约束是**真的**成立，而不是靠一句注释撑着：
-#   - core    ：无线程、无文件系统，Android / 服务端 / CLI 都能用
-#   - train   ：有线程，**只有 CLI 的训练子命令链接它**
-# Android 与服务端不链接本库，所以它们不会因为训练代码而引入线程依赖。
+#   - core     ：无线程、无文件系统，Android / 服务端 / CLI 都能用
+#   - net_eval ：n-tuple 网络的**推断**（纯查表，无线程）
+#   - train    ：TD 训练，有线程，只有 CLI 链接它
 #
-# 注意：价值网络的**推断**（Evaluate）目前还没接进 search.cpp。
-# 接进去的时候它会被 core 用到，那时要把 value_network.cpp 移回 core
-# （它是无线程的纯查表），只把 trainer.cpp 留在这里。
+# 为什么推断要单独一层而不是并进 core：core 是给 Android 的最小核心，
+# 不该被价值网络的文件 IO（Save/Load）拖上。但又不能并进 train ——
+# **服务端要用推断却不需要训练**，它不该为了跑推断而链接 std::thread。
+# 这一层就是那个缺口，而且这些文件是纯查表 + 文件读写，无线程。
+# ---------------------------------------------------------------------------
+add_library(ai2048_net_eval STATIC
+  src/ai/learn/value_network.cpp
+)
+target_link_libraries(ai2048_net_eval PUBLIC ai2048_core)
+ai2048_apply_project_flags(ai2048_net_eval)
+
+# ---------------------------------------------------------------------------
+# TD 训练
 # ---------------------------------------------------------------------------
 add_library(ai2048_train STATIC
   src/ai/learn/trainer.cpp
-  src/ai/learn/value_network.cpp
 )
-target_link_libraries(ai2048_train PUBLIC ai2048_core)
+target_link_libraries(ai2048_train PUBLIC ai2048_net_eval)
 
 # 线程支持：MinGW-w64 的 thread model 是 posix，链接需要显式带上。
 # find_package 会在各平台上挑对（Windows 上通常是空的，Linux 上是 -pthread）。
@@ -124,7 +133,9 @@ add_executable(ai2048-server
   src/net/server_main.cpp
   src/net/socket_server.cpp
 )
-target_link_libraries(ai2048-server PRIVATE ai2048_core)
+# 链接 ai2048_net_eval（不是 ai2048_train）：服务端要跑**推断**，
+# 但不需要训练 —— 不该为了推断而链接 std::thread。
+target_link_libraries(ai2048-server PRIVATE ai2048_net_eval)
 
 # Windows 的 socket 在 ws2_32 里；POSIX 平台 socket 属于 libc，无需额外链接。
 # 注意 MinGW 不提供 <poll.h>，实现用的是 select()（见 socket_server.cpp）。

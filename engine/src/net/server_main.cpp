@@ -27,6 +27,9 @@
 #include <winsock2.h>
 #endif
 
+#include <memory>
+
+#include "ai/learn/search_bridge.h"
 #include "ai2048/ai2048.h"
 #include "core/console.h"
 #include "net/protocol.h"
@@ -52,6 +55,8 @@ struct Options {
   std::string host = "127.0.0.1";
   std::uint16_t port = 8765;
   int depth = 8;
+  /** 训练好的权重路径。空 = 用手写启发式（默认）。 */
+  std::string net_file;
 };
 
 [[nodiscard]] bool ParseOptions(int argc, char** argv, Options* options) {
@@ -64,6 +69,8 @@ struct Options {
       options->port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
     } else if (arg == "--depth" && has_next) {
       options->depth = std::atoi(argv[++i]);
+    } else if (arg == "--net-file" && has_next) {
+      options->net_file = argv[++i];
     } else if (arg == "-h" || arg == "--help") {
       return false;
     } else {
@@ -78,6 +85,10 @@ void PrintUsage() {
   std::cout << "ai2048-server " << ai2048::VersionString() << " (ruleset "
             << ai2048::RulesetVersion() << ")\n"
             << "用法: ai2048-server [--host 127.0.0.1] [--port 8765] [--depth 8]\n"
+            << "                    [--net-file <训练权重>]\n"
+            << "\n"
+            << "  --net-file 用训练好的 n-tuple 权重做叶子评估，替代手写启发式。\n"
+            << "             不传就是手写启发式（与历史基准一致）。\n"
             << "\n"
             << "前端连接方式：http://<前端地址>/?engine=ws://<host>:<port>\n"
             << "\n"
@@ -113,6 +124,18 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, HandleSignal);
 #endif
 
+  // 先加载权重再起服务：加载失败就**直接退出**，不要起一个"看起来在跑、
+  // 其实用的是另一套评估"的服务 —— 那种静默降级比启动失败难查得多。
+  std::string net_error;
+  auto loaded_network = ai2048::learn::LoadNetworkFromFile(options.net_file, &net_error);
+  if (!loaded_network.has_value()) {
+    std::cerr << "加载权重失败：" << net_error << "\n";
+    return 1;
+  }
+  // 提到循环外，生命周期覆盖整个服务运行期 ——
+  // leaf_evaluator 的 context 是指向它的裸指针，它必须先于服务析构。
+  const std::shared_ptr<ai2048::learn::ValueNetwork> network = *loaded_network;
+
   ai2048::net::SocketServer server;
   std::string error;
   if (!server.Listen(options.host, options.port, &error)) {
@@ -121,7 +144,14 @@ int main(int argc, char** argv) {
   }
 
   std::string log_prefix;
-  ai2048::net::ProtocolHandler handler(&server, &log_prefix);
+  // 会话级的默认配置：深度与网络在这里统一注入。
+  // 之前这两个都没接上 —— --depth 只被打印出来，实际搜索用的是
+  // SearchConfig 的默认值（8），是"参数看着生效、其实没生效"的典型。
+  ai2048::SearchConfig defaults;
+  defaults.base_depth = options.depth;
+  ai2048::learn::AttachNetwork(network, &defaults);
+
+  ai2048::net::ProtocolHandler handler(&server, &log_prefix, defaults);
   server.SetCallbacks([&handler](ai2048::net::ConnectionId id) { handler.OnOpen(id); },
                       [&handler](ai2048::net::ConnectionId id, const char* data,
                                  std::size_t length) { return handler.OnData(id, data, length); },
@@ -131,6 +161,12 @@ int main(int argc, char** argv) {
             << ai2048::RulesetVersion() << "）已启动\n";
   std::cout << "  监听    ws://" << options.host << ":" << server.port() << "\n";
   std::cout << "  默认深度 " << options.depth << "\n";
+  if (network) {
+    std::cout << "  叶子评估 学习权重 " << options.net_file << "（" << network->tuple_count()
+              << " tuple，" << network->parameter_count() << " 参数）\n";
+  } else {
+    std::cout << "  叶子评估 手写启发式（未传 --net-file）\n";
+  }
   std::cout << "  前端连 http://<前端地址>/?engine=ws://" << options.host << ":" << server.port()
             << "\n";
   std::cout << "  按 Ctrl+C 停止\n";

@@ -266,13 +266,18 @@ void ApplyConfig(const Value& config, ai2048::SearchConfig* target, bool* diffic
 
 }  // namespace
 
-ProtocolHandler::ProtocolHandler(SocketServer* server, std::string* /*log_prefix*/)
-    : server_(server) {}
+ProtocolHandler::ProtocolHandler(SocketServer* server, std::string* /*log_prefix*/,
+                                 const ai2048::SearchConfig& defaults)
+    : server_(server), defaults_(defaults) {}
 
 void ProtocolHandler::OnOpen(ConnectionId id) {
   // 用 try_emplace 原地构造：Session 内含不可移动的 TranspositionTable，
-  // 所以不能先默认构造再赋值。
-  sessions_.try_emplace(id);
+  // 所以既不能先默认构造再赋值，也不能先造好再 move 进去。
+  // 指定初始化器（C++20）允许只写要改的字段，其余走默认成员初始化。
+  //
+  // 把默认配置带进来，保证"服务端启动时指定的深度与叶子评估"在客户端
+  // 发 configure 之前就已经生效 —— 否则发请求前那几步会用错配置。
+  sessions_.try_emplace(id, defaults_);
 }
 
 void ProtocolHandler::OnClose(ConnectionId id) { sessions_.erase(id); }
