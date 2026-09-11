@@ -264,6 +264,38 @@ node tools\static-server.mjs --engine ws://127.0.0.1:8765 --open
    这种莫名其妙的错（`if errorlevel` 被截断了）—— 与内容毫无关系的报错，
    极难从现象反推。
 
+### Windows 写文件：BOM 与 CRLF（本条踩过三种不同的坑）
+
+**统一规则：本项目里凡是要被工具读取的文本文件，一律 UTF-8 无 BOM。**
+
+PowerShell 5.1 的 `Out-File -Encoding UTF8` / `Set-Content -Encoding UTF8`
+**会写 BOM**。已经踩到的三个地方：
+
+1. **`.bat` 带 BOM** → `cmd` 把 `@echo off` 读成乱码命令，报
+   `'@echo' is not recognized`。
+2. **提交信息文件带 BOM** → `git commit -F <文件>` 会把 BOM 吃进主题行，
+   日志里变成 `﻿feat(ai): ...`（首字符是个不可见字符）。
+   提交前看不出来，`git log` 里才发现。
+3. **JSON 配置带 BOM** → `JSON.parse` 直接抛
+   `Unexpected token ''`（全局 `AGENTS.md` 第 12 节记录过同类事故）。
+
+**正确写法**（读时 .NET 自动剥 BOM，写时显式指定无 BOM）：
+
+```powershell
+$t = [System.IO.File]::ReadAllText($p)
+[System.IO.File]::WriteAllText($p, $t, (New-Object System.Text.UTF8Encoding($false)))
+```
+
+**写完必须验首字节**，不能靠"读出来正常"判断 ——
+`Get-Content -Encoding UTF8` 读取时会自动剥掉 BOM：
+
+```powershell
+$b = [System.IO.File]::ReadAllBytes($p)
+"有 BOM" if ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
+```
+
+**更省事的办法：优先用编辑器的 `write` / `edit` 工具，不用 PowerShell 重定向写文件。**
+
 ### 引擎端口不是游戏页面
 
 `ai2048-server` 是**纯 WebSocket 服务**，只用来说协议、给 AI 决策，
