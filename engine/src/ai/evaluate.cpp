@@ -435,12 +435,6 @@ struct RawTerms {
   out.island_tiles = terms.islands;
   // 可移动性用**平方**：4→3 个方向无所谓，2→1 才是真的危险。
   out.mobility = static_cast<float>(terms.mobility * terms.mobility) * weights.mobility;
-  // 孤立块是惩罚项 —— 权重应为负，符号交给权重本身。
-  out.islands = static_cast<float>(terms.islands) * weights.islands;
-  out.mobility_directions = terms.mobility;
-  out.island_tiles = terms.islands;
-  // 可移动性用**平方**：4→3 个方向无所谓，2→1 才是真的危险。
-  out.mobility = static_cast<float>(terms.mobility * terms.mobility) * weights.mobility;
   // 孤立块是惩罚项，权重应为负（与文档一致）；这里只做乘法，符号交给权重。
   out.islands = static_cast<float>(terms.islands) * weights.islands;
   out.max_tile = static_cast<float>(terms.max_exponent) * weights.max_tile;
