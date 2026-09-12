@@ -40,100 +40,44 @@ constexpr float kLostValue = -1.0e30F;
  *
  * 必须与 core/game.cpp 的 Game::SpawnRandomTile **语义一致** ——
  * 这是 AI 的"世界模型"，与实际游戏不符会让它低估风险或高估机会。
- * 一致性由 tests/difficulty_test.cpp 的 DifficultyWorldModel 系列断言保证
- * （它是把这里的权重归一化后，与实际采样 20000 次得到的频率逐格比较）。
  *
- * 生成规则是两个分支的混合，所以权重也必须是**两个条件分布的加权和**：
+ * ## 为什么这里是"转发"而不是自己再算一遍
  *
- *   偏置分支以概率 b 在候选集合 C 里均匀选一个；
- *   否则（概率 1-b）在全盘空格里均匀选一个。
+ * 生成规则在 2026-09-12 改成了「加权随机 + 纯随机兜底」，位置分布是
  *
- *   → 命中候选的格子： w = b/|C| + (1-b)/|空格|
- *   → 其他空格：       w =         (1-b)/|空格|
- *   → 已占格：         不作要求（搜索只遍历空格）
+ *     简单 80% × exp(安全分 × 0.35) 加权 + 20% 均匀
+ *     中等 100% 均匀
+ *     困难 75% × exp(不利分 × 0.35) 加权 + 25% 均匀
  *
- * 其中 easy 的 b=0.7、C=空角落；hard 的 b=0.8、C=最大块的相邻空格；
- * normal 没有偏置分支，退化成 w = 1/|空格|。
+ * （强度与饱和上限见 core/game.h 的 kEasyWeightStrength / kScoreSaturation；
+ * 那两个值是实测标定的，不是文档给的 0.70/0.85 —— 原因写在 game.h 里。）
+ * 那套评分有十来个项（边缘/角落/空旷/可合并/拥挤/断裂/贴大块……），
+ * **在本文件里重写一份必然分叉**。本项目已经因为"两份实现悄悄分叉"
+ * 吃过一次亏：走子后的生成退回均匀分布，难度只在开局生效，而外表看不出问题。
  *
- * ⚠️ 踩过的坑：一开始把基础项写成 `1/|空格|`（也就是按"均匀"满额填），
- * 然后把偏置项加上去 —— 那等价于假设"未命中偏置时仍然按 1/空格 分配"，
- * 但后面的归一化会把它压掉，于是命中格的相对优势被系统性高估
- * （实测 easy 角上预测 0.142 而实际 0.196）。
- * 正确的基础项是 `(1-b)/|空格|`。
+ * 所以现在直接调 core 的 SpawnCellWeights —— 评分与权重表只有一份真相。
  *
- * 用 double 而不是 float：这些权重会被反复相乘累加，
- * float 在深搜里会累积可见的误差。
+ * ⚠️ 但 SpawnCellWeights 返回的是**未归一化**的相对权重（给 AI 的期望值计算用，
+ * 那里常数因子会整体约掉）。本函数的契约是**归一化概率**（空格上权重和恰好为 1），
+ * 所以这里补一次归一化。两个口径都对，混起来会让"预测 vs 实际"的整体对拍
+ * 差一个常数倍 —— 那正是本文件里最容易悄悄出错的地方。
+ *
+ * ## 踩过的坑（保留记录，改这段之前先读）
+ *
+ * 早期版本把基础项写成 `1/|空格|`（按"均匀"满额填），再加偏置项。
+ * 那等价于假设"未命中偏置时仍按 1/空格 分配"，但后续归一化会把它压掉，
+ * 于是命中格的相对优势被系统性高估（实测 easy 角上预测 0.142 而实际 0.196）。
+ * 现在的基础项由 core 的公式给出：`(1−w) × 总权重 / 空格数`，
+ * 其中"总权重"同时缩放两个分支，所以比例是对的。
  */
 std::array<double, kCellCount> SpawnWeights(std::uint64_t board, Difficulty difficulty) {
-  std::array<double, kCellCount> weights{};
+  std::array<double, kCellCount> weights = SpawnCellWeights(board, difficulty);
 
-  int empty_count = 0;
-  for (int i = 0; i < kCellCount; ++i) {
-    if (GetExponent(board, i) == 0) ++empty_count;
-  }
-  if (empty_count == 0) {
-    weights.fill(0.0);
-    return weights;
-  }
+  double total = 0.0;
+  for (const double value : weights) total += value;
+  if (total <= 0.0) return weights;  // 没有空格：全零，调用方无需归一化
 
-  // 先把"候选集合"和偏置概率定下来
-  std::array<int, kCellCount> candidates{};
-  int candidate_count = 0;
-  double bias = 0.0;
-
-  if (difficulty == Difficulty::kEasy) {
-    for (const int index : {0, 3, 12, 15}) {
-      if (GetExponent(board, index) == 0) {
-        candidates[static_cast<std::size_t>(candidate_count)] = index;
-        ++candidate_count;
-      }
-    }
-    bias = static_cast<double>(kEasyCornerNumerator) / static_cast<double>(kDifficultyDenominator);
-  } else if (difficulty == Difficulty::kHard) {
-    constexpr std::array<std::array<int, 2>, 4> kOffsets = {{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
-    // 与生成规则一致：**按等级从高到低**找第一个"四周有空位"的方块。
-    //
-    // 两个必须做对的地方（都踩过）：
-    //   1. 不能只看最大块 —— 它在残局常被围死，而偏置本该落在
-    //      "还有空位的大块"旁边，否则残局里这条规则等于不生效。
-    //   2. **每个等级要检查它的所有方块**，不能只看行优先第一个 ——
-    //      否则只有位置最靠前的方块能触发，表现成"新方块全挤在左上角"。
-    for (int exponent = MaxExponent(board); exponent >= 1 && candidate_count == 0; --exponent) {
-      for (int index = 0; index < kCellCount && candidate_count == 0; ++index) {
-        if (GetExponent(board, index) != exponent) continue;
-
-        const int row = index / kBoardSize;
-        const int col = index % kBoardSize;
-        for (const auto& offset : kOffsets) {
-          const int r = row + offset[0];
-          const int c = col + offset[1];
-          if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
-          const int neighbour = r * kBoardSize + c;
-          if (GetExponent(board, neighbour) == 0) {
-            candidates[static_cast<std::size_t>(candidate_count)] = neighbour;
-            ++candidate_count;
-          }
-        }
-        // 这个方块被围死就继续看同等级的下一个
-      }
-    }
-    bias = static_cast<double>(kHardNearMaxNumerator) / static_cast<double>(kDifficultyDenominator);
-  }
-
-  // 偏置不可用（没有候选格）时整条规则退化成全盘均匀 —— 与生成实现一致。
-  if (candidate_count == 0) bias = 0.0;
-
-  const double uniform = 1.0 / static_cast<double>(empty_count);
-  const double base_share = (1.0 - bias) * uniform;
-  weights.fill(base_share);
-
-  if (candidate_count > 0 && bias > 0.0) {
-    const double candidate_share = bias / static_cast<double>(candidate_count);
-    for (int i = 0; i < candidate_count; ++i) {
-      weights[static_cast<std::size_t>(candidates[static_cast<std::size_t>(i)])] += candidate_share;
-    }
-  }
-
+  for (double& value : weights) value /= total;
   return weights;
 }
 

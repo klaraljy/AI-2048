@@ -50,12 +50,6 @@ constexpr std::array<int, 4> kCorners = {0, 3, 12, 15};
   return false;
 }
 
-/** (row, col) 是否与 (max_row, max_col) **上下左右**相邻（不含斜角）。 */
-[[nodiscard]] bool IsAdjacent(int row, int col, int max_row, int max_col) {
-  return (row == max_row && (col == max_col - 1 || col == max_col + 1)) ||
-         (col == max_col && (row == max_row - 1 || row == max_row + 1));
-}
-
 [[nodiscard]] int EmptyCount(std::uint64_t board) {
   int n = 0;
   for (int i = 0; i < kCellCount; ++i) {
@@ -133,6 +127,8 @@ struct MaxCell {
 struct Sample {
   int index = 0;
   int count = 0;
+  /** 这些落点里生成的是 4（而不是 2）的次数。用于验证数值概率随难度变化。 */
+  int four_count = 0;
 };
 
 /**
@@ -146,18 +142,23 @@ struct Sample {
 [[nodiscard]] std::vector<Sample> SampleSpawns(Difficulty difficulty, std::uint64_t board,
                                                int trials) {
   std::array<int, kCellCount> counts{};
+  std::array<int, kCellCount> four_counts{};
   Game game(20240911, difficulty);
   for (int i = 0; i < trials; ++i) {
     game.SetBoardForTesting(board);
     const SpawnRecord record = game.SpawnRandomTile();
     if (record.exponent == 0) continue;  // 盘面满了：调用方会先断言
-    counts[static_cast<std::size_t>(record.row * kBoardSize + record.col)]++;
+    const auto slot = static_cast<std::size_t>(record.row * kBoardSize + record.col);
+    counts[slot]++;
+    // 指数 2 = 数值 4（指数 1 = 数值 2）
+    if (record.exponent == 2) four_counts[slot]++;
   }
 
   std::vector<Sample> samples;
   for (int i = 0; i < kCellCount; ++i) {
     if (counts[static_cast<std::size_t>(i)] > 0) {
-      samples.push_back({i, counts[static_cast<std::size_t>(i)]});
+      samples.push_back(
+          {i, counts[static_cast<std::size_t>(i)], four_counts[static_cast<std::size_t>(i)]});
     }
   }
   return samples;
@@ -239,35 +240,6 @@ struct Sample {
   return EncodeBoard({1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1});
 }
 
-/**
- * **两个最大块：行优先第一个被围死，第二个旁边有空位。**
- * 这是"每级只看第一个方块"那个缺陷的**回归测试盘面**。
- *
- * 布局（值，. 表示空）：
- *      8  2  4  .
- *      2  4  2  .
- *      4  2  2  8
- *      2  4  2  4
- *
- * (0,0) 的 8 被 (0,1)=2 与 (1,0)=2 围死；
- * (2,3) 的 8 上方 (1,3) 是空的 → **它才是可放的那个**，偏置应落在 (1,3)。
- *
- * 缺陷版本只取行优先第一个 8（即 (0,0)），发现它没有空邻格就**直接跳到
- * 下一等级**，于是偏置落到别处甚至关闭 —— 表现出来就是
- * "新方块全挤在左上角"，正是用户报的那个现象。
- *
- * 之前的盘面为什么没抓到：它们每个等级只有一个方块，
- * 所以"只看第一个"和"看全部"结果相同。回归测试必须造出**同等级多个**。
- */
-[[nodiscard]] std::uint64_t BoardTwoMaxOneTrapped() {
-  return EncodeBoard({
-      3, 1, 2, 0,  // 8 2 4 .
-      1, 2, 1, 0,  // 2 4 2 .
-      2, 1, 1, 3,  // 4 2 2 8
-      1, 2, 1, 2,  // 2 4 2 4
-  });
-}
-
 // ---------------------------------------------------------------------------
 // 盘面自检（盘面写错时，第一条失败的断言必须指出"是盘面错了"）
 // ---------------------------------------------------------------------------
@@ -323,8 +295,14 @@ TEST(DifficultyBoards, FixturesHaveThePropertiesTheyClaim) {
 // easy：70% 落角
 // ---------------------------------------------------------------------------
 
-TEST(DifficultySpawn, EasyLandsInCorner) {
-  const std::vector<Sample> samples = SampleSpawns(Difficulty::kEasy, BoardMaxInCenter(), kTrials);
+TEST(DifficultySpawn, EasyFavoursCornersOverUniform) {
+  // 新规则（2026-09-12）是**加权随机**，不再是"以 70% 概率跳到空角落"。
+  //
+  // 所以断言的口径也变了：均匀落角率是 4/15 ≈ 0.267，加权后应当**明显高于**
+  // 它，但不该像旧规则那样接近 0.70 —— 加权分布在去掉纯随机那一份之后，
+  // 角的合计份额也只有三成左右。
+  const std::uint64_t board = BoardMaxInCenter();
+  const std::vector<Sample> samples = SampleSpawns(Difficulty::kEasy, board, kTrials);
   ASSERT_EQ(samples.size(), 15u) << "15 个空格都应被覆盖";
 
   int corner_hits = 0;
@@ -332,22 +310,28 @@ TEST(DifficultySpawn, EasyLandsInCorner) {
     if (IsCorner(sample.index)) corner_hits += sample.count;
   }
   const double rate = static_cast<double>(corner_hits) / kTrials;
+  const double uniform_rate = 4.0 / 15.0;
 
-  // 规格的准确含义：偏置分支 70%，未命中时走全盘均匀，那 30% 里仍有
-  // 4/15 的概率落在角上 → 观测值应略高于 70%，但不能高到像"必定落角"。
-  EXPECT_GT(rate, 0.69) << "落角率 " << rate << " 低于 70%，偏置没生效";
-  EXPECT_LT(rate, 0.85) << "落角率 " << rate << " 过高，可能退化成了必定落角";
+  // 实测（strength 0.35 + 评分饱和 600）约 0.41。
+  // 旧规则是 0.70，太高（文档警告的"过于温和"）；均匀是 0.267，太低。
+  // 0.32~0.50 这个区间既排除"加权没生效"，也排除"退化成必定落角"。
+  EXPECT_GT(rate, uniform_rate + 0.05)
+      << "落角率 " << rate << " 不比均匀值 " << uniform_rate << " 明显高，简单档的加权没生效";
+  EXPECT_LT(rate, 0.50) << "落角率 " << rate
+                        << " 高得离谱 —— 加权可能退化成了『必定落角』，"
+                           "那样简单档会过于温和（文档明确要求保留 20% 纯随机）";
 }
 
 TEST(DifficultySpawn, EasyStillFillsNonCornerCells) {
+  // 20% 的纯随机兜底必须真的存在：非角落格要拿到可观的份额。
+  // 加权分支也会给它们分一些（空旷、可合并都能加分），所以下限不能设太高。
   const std::vector<Sample> samples = SampleSpawns(Difficulty::kEasy, BoardMaxInCenter(), kTrials);
   int non_corner = 0;
   for (const Sample& sample : samples) {
     if (!IsCorner(sample.index)) non_corner += sample.count;
   }
   const double rate = static_cast<double>(non_corner) / kTrials;
-  // 30% 的随机分支 × 11/15 的落点 ≈ 22%，不能接近 0
-  EXPECT_GT(rate, 0.15) << "非角落只占 " << rate << "，30% 的随机分支没生效";
+  EXPECT_GT(rate, 0.40) << "非角落只占 " << rate << "，纯随机兜底或加权分布有问题";
 }
 
 // ---------------------------------------------------------------------------
@@ -373,198 +357,113 @@ TEST(DifficultySpawn, NormalIsUniformOnSparseBoard) {
 // hard：80% 贴最大块
 // ---------------------------------------------------------------------------
 
-TEST(DifficultySpawn, HardLandsNextToMaxTile) {
-  const std::vector<Sample> samples = SampleSpawns(Difficulty::kHard, BoardMaxInCenter(), kTrials);
-  const MaxCell max_cell = FirstMaxCell(BoardMaxInCenter());
-  ASSERT_TRUE(max_cell.found);
+// ---------------------------------------------------------------------------
+// 困难档：加权随机，不再是"以 80% 概率精确跳到最大块旁边"
+//
+// 规则在 2026-09-12 改成加权随机 + 纯随机兜底，所以原先那批
+// 「HardLandsNextToMaxTile / HardBiasUsesOnlyOrthogonalNeighbours /
+//   HardChecksEveryTileOfTheLevelNotJustTheFirst / HardFallsBackToNextLargest…」
+// 断言的具体机制已经不存在了 —— 它们测的是"偏置如何选候选格"，
+// 而现在根本没有候选格这个概念，只有一张按评分加权的分布。
+//
+// 这里换成测**性质**而不是测机制：加权到底有没有把概率推向不利位置、
+// 有没有正确扣掉"立刻能合并"的位置、以及纯随机兜底的比例对不对。
+// ---------------------------------------------------------------------------
+
+/** kHard 在某个空位上的相对权重（已归一化）。 */
+
+TEST(DifficultySpawn, HardWeightingFavoursCrowdedCells) {
+  // BoardMaxSurrounded 里空格全在最后一列，其中 (0,3)(1,3)(2,3) 空，
+  // 而 (3,3) 也空。拥挤程度不同，权重就该不同。
+  const std::uint64_t board = BoardMaxSurrounded();
+  const std::array<double, kCellCount> weights = SpawnWeights(board, Difficulty::kHard);
+
+  // 先确认打出来的分布不是均匀的 —— 加权随机一旦失效（例如 weighted_share
+  // 被误设成 0），分布会退化成均匀，而这个测试必须能抓住那种回归。
+  double max_weight = 0.0;
+  double min_weight = 1.0;
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) != 0) continue;
+    max_weight = std::max(max_weight, weights[static_cast<std::size_t>(i)]);
+    min_weight = std::min(min_weight, weights[static_cast<std::size_t>(i)]);
+  }
+  EXPECT_GT(max_weight / min_weight, 1.2)
+      << "困难档的空格权重几乎相等（max/min = " << (max_weight / min_weight)
+      << "），加权分支没有起作用";
+}
+
+TEST(DifficultySpawn, HardSharesProbabilityWithPureRandom) {
+  // 纯随机兜底的比例是**规则的一部分**：没有它，困难档会显得在作弊。
+  // 检验方式是找一个"加权严重偏向某一格"的盘面，看那一格的实际占比
+  // 是否明显低于 1（= 没有变成必定落那里）。
+  const std::uint64_t board = BoardMaxInCenter();
+  const std::vector<Sample> samples = SampleSpawns(Difficulty::kHard, board, kTrials);
+
+  int best_index = -1;
+  double best_weight = -1.0;
+  const std::array<double, kCellCount> weights = SpawnWeights(board, Difficulty::kHard);
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) != 0) continue;
+    if (weights[static_cast<std::size_t>(i)] > best_weight) {
+      best_weight = weights[static_cast<std::size_t>(i)];
+      best_index = i;
+    }
+  }
+  ASSERT_GE(best_index, 0);
 
   int hits = 0;
   for (const Sample& sample : samples) {
-    const int row = sample.index / kBoardSize;
-    const int col = sample.index % kBoardSize;
-    if (IsAdjacent(row, col, max_cell.row, max_cell.col)) hits += sample.count;
+    if (sample.index == best_index) hits += sample.count;
   }
   const double rate = static_cast<double>(hits) / kTrials;
-  EXPECT_GT(rate, 0.79) << "贴最大块率 " << rate << " 低于 80%，偏置没生效";
-  EXPECT_LT(rate, 0.95) << "贴最大块率 " << rate << " 过高，可能退化成了必定贴块";
+  EXPECT_LT(rate, 0.45) << "最高权重格占了 " << rate
+                        << " 的生成 —— 纯随机兜底没起作用，困难档会显得在作弊";
+  EXPECT_GT(rate, 1.0 / 15.0) << "最高权重格占比 " << rate << " 不高于均匀值，加权没生效";
 }
 
-TEST(DifficultySpawn, HardBiasUsesOnlyOrthogonalNeighbours) {
-  // 若把斜角也算作"附近"，落角率会异常升高（四角里的斜角更多）。
-  // 这里用"对角四格"的占比做反证：它们不该被偏置照顾。
-  const std::vector<Sample> samples = SampleSpawns(Difficulty::kHard, BoardMaxInCenter(), kTrials);
-  const MaxCell max_cell = FirstMaxCell(BoardMaxInCenter());
-
-  int diagonal = 0;
-  for (const Sample& sample : samples) {
-    const int row = sample.index / kBoardSize;
-    const int col = sample.index % kBoardSize;
-    const bool is_diagonal =
-        (std::abs(row - max_cell.row) == 1 && std::abs(col - max_cell.col) == 1);
-    if (is_diagonal) diagonal += sample.count;
-  }
-  // 均匀时对角 4 格占 4/16 = 25%；偏置只照顾正邻，所以对角应低于均匀
-  const double rate = static_cast<double>(diagonal) / kTrials;
-  EXPECT_LT(rate, 0.20) << "对角格占 " << rate << "，偏置可能把斜角也算进去了";
-}
-
-// ---------------------------------------------------------------------------
-// 偏置不可用时的退路
-// ---------------------------------------------------------------------------
-
-TEST(DifficultySpawn, EasyFallsBackWhenAllCornersOccupied) {
-  const std::vector<Sample> samples = SampleSpawns(Difficulty::kEasy, BoardCornersTaken(), kTrials);
-  ASSERT_EQ(samples.size(), 12u) << "四角已占，落点应覆盖其余 12 格";
-  for (const Sample& sample : samples) {
-    EXPECT_FALSE(IsCorner(sample.index)) << "角落已占，不该再落角";
-  }
-  EXPECT_LT(ChiSquareUniform(samples, 12), CriticalChiSquare(11)) << "退路应当是均匀的";
-}
-
-TEST(DifficultySpawn, HardChecksEveryTileOfTheLevelNotJustTheFirst) {
-  // **回归测试**：曾经只检查每个等级里行优先的第一个方块，
-  // 它被围死就跳到下一等级 —— 于是同等级的其它方块再有机会也不看。
-  // 表现：新方块全挤在左上角（用户报的现象）。
-  //
-  // 盘面里有两个 8，(0,0) 那个被围死，(2,3) 那个上方 (1,3) 是空的。
-  const std::uint64_t board = BoardTwoMaxOneTrapped();
-
-  // 盘面自检
-  MaxCell first{};
-  {
-    int row = -1;
-    int col = -1;
-    for (int index = 0; index < kCellCount; ++index) {
-      if (GetExponent(board, index) == 3) {
-        row = index / kBoardSize;
-        col = index % kBoardSize;
-        break;
-      }
-    }
-    first.row = row;
-    first.col = col;
-    first.found = row >= 0;
-  }
-  ASSERT_TRUE(first.found);
-  EXPECT_EQ(first.row, 0) << "自检：行优先第一个 8 应当在 (0,0)";
-  EXPECT_EQ(first.col, 0);
-  // 第一个 8 必须被围死
-  EXPECT_NE(GetExponent(board, 1), 0) << "自检：(0,1) 必须被占";
-  EXPECT_NE(GetExponent(board, kBoardSize), 0) << "自检：(1,0) 必须被占";
-  // 第二个 8 的邻居必须有一个空位
-  const int second_max = 2 * kBoardSize + 3;
-  ASSERT_EQ(GetExponent(board, second_max), 3) << "自检：(2,3) 应当是第二个 8";
-  const int biased_index = 1 * kBoardSize + 3;  // (1,3)
-  ASSERT_EQ(GetExponent(board, biased_index), 0) << "自检：(1,3) 应当是空位";
-
-  // 引擎认定的"可放等级"应当是 3（也就是那个没被围死的 8）
-  EXPECT_EQ(LargestMovableExponent(board), 3)
-      << "应当认为等级 3 仍然可放 —— 因为存在第二个 8 有空位";
-
-  // 落点分布：偏置目标 (1,3) 的概率应显著高于其它空格
-  const std::vector<Sample> samples = SampleSpawns(Difficulty::kHard, board, kTrials);
-  int biased_hits = 0;
-  int other_hits = 0;
-  for (const Sample& sample : samples) {
-    if (sample.index == biased_index) {
-      biased_hits += sample.count;
-    } else {
-      other_hits += sample.count;
-    }
-  }
-  EXPECT_GT(biased_hits, other_hits * 4)
-      << "偏置格只拿到 " << biased_hits << " 而其它格共 " << other_hits
-      << " —— 说明没有检查同等级的第二个方块，又退回只看第一个了";
-}
-
-TEST(DifficultySpawn, HardFallsBackToNextLargestMovableTile) {
-  // 规则（用户明确指示）：**按等级从高到低**找第一个"四周有空位"的方块，
-  // 在它的相邻空格里放新块。例如 2048 被围死、但 128 旁边有空，就放在 128 旁边。
-  //
-  // 用 BoardSecondaryMovable：8 在 (1,1) 四邻全被占，
-  // 而 (1,2) 是空位且挨着 4 —— 偏置应当落到它上面，而不是关闭。
-  const std::uint64_t board = BoardSecondaryMovable();
-  ASSERT_EQ(EmptyNeighboursOfMax(board), 0) << "盘面自检：最大块四邻必须全被占";
-  ASSERT_EQ(LargestMovableExponent(board), 2) << "盘面自检：应当退到等级 2（也就是 4 那一档）";
-
-  // 偏置位置直接写出来 —— **而且必须核对它确实挨着那个等级**。
-  // 我在这里错过两次：先把 (2,2) 当成候选，但它的邻居是 2（下标 9），不是 4。
-  // 真正的候选是 (0,2)：它挨着 (0,1) 的 4，而 (0,1) 是等级 2 里行优先第一个。
-  const std::vector<int> biased = {0 * kBoardSize + 2};
-  for (const int index : biased) {
-    ASSERT_EQ(GetExponent(board, index), 0) << "候选位置 " << index << " 必须是空格";
-  }
-  // 再次核对：候选必须与某个 4 相邻（否则它不可能是偏置目标）
-  ASSERT_EQ(GetExponent(board, 1), 2) << "盘面自检：(0,1) 应当是 4";
-  ASSERT_EQ(GetExponent(board, 2 * kBoardSize + 1), 2) << "盘面自检：(2,1) 应当是 4";
-
-  const std::vector<Sample> samples = SampleSpawns(Difficulty::kHard, board, kTrials);
-  const int empties = EmptyCount(board);
-  ASSERT_EQ(static_cast<int>(samples.size()), empties) << "应覆盖全部 " << empties << " 个空格";
-  ASSERT_EQ(empties, 2) << "盘面自检：这个盘面应恰好 2 个空格（(0,2) 与 (2,2)）";
-
-  // 期望值：以 0.8 的概率走偏置分支（候选恰好只有 (0,2) 一格），
-  // 以 0.2 的概率走全盘均匀（2 格里各一半）。
-  //   P((0,2) 被选中) = 0.8 + 0.2 × 1/2 = 0.9
-  // 注意空格数**不要自己数** —— 我数错过两次，用 EmptyCount 并把它断言出来。
-  int biased_hits = 0;
-  for (const Sample& sample : samples) {
-    for (const int index : biased) {
-      if (index == sample.index) biased_hits += sample.count;
-    }
-  }
-  const double biased_rate = static_cast<double>(biased_hits) / static_cast<double>(kTrials);
-  const double expected_rate = 0.8 + 0.2 * (1.0 / static_cast<double>(empties));
-  EXPECT_NEAR(biased_rate, expected_rate, 0.03)
-      << "偏置候选的落点率 " << biased_rate << "，期望约 " << expected_rate
-      << " —— 说明没有退到「下一个有空位的大块」，或者退过头了";
-}
-
-TEST(DifficultySpawn, HardDiffersFromNormalWhenBiasApplies) {
-  // 反面：偏置生效时，hard 的分布必须与 normal **不同**。
-  // 用 BoardSecondaryMovable —— 最大块被围死但次级块有空位，偏置应当仍然生效。
-  const std::uint64_t board = BoardSecondaryMovable();
-  const std::vector<Sample> hard = SampleSpawns(Difficulty::kHard, board, kTrials);
-  const std::vector<Sample> normal = SampleSpawns(Difficulty::kNormal, board, kTrials);
-
-  std::map<int, int> hard_map;
-  for (const Sample& sample : hard) hard_map[sample.index] = sample.count;
-  std::map<int, int> normal_map;
-  for (const Sample& sample : normal) normal_map[sample.index] = sample.count;
-
-  EXPECT_EQ(hard_map.size(), normal_map.size()) << "覆盖的格子数应一致";
-
-  // 逐格比较：应当存在明显差异的格子（偏置把概率集中到了某处）
-  const int empties = EmptyCount(board);
-  const double sigma = std::sqrt(static_cast<double>(kTrials) / static_cast<double>(empties));
-  bool found_difference = false;
-  for (const auto& [index, count] : normal_map) {
-    const auto it = hard_map.find(index);
-    ASSERT_NE(it, hard_map.end()) << "hard 少了格子 " << index;
-    if (std::abs(static_cast<double>(it->second - count)) > 6.0 * sigma) found_difference = true;
-  }
-  EXPECT_TRUE(found_difference)
-      << "hard 与 normal 的分布没有明显差异 —— 偏置可能没有退到下一个大块，而是直接关闭了";
-}
-
-// ---------------------------------------------------------------------------
-// 取值概率不随难度变化（规格只改位置）
-// ---------------------------------------------------------------------------
-
-TEST(DifficultySpawn, TileValuesStayAt90PercentTwos) {
+TEST(DifficultySpawn, HardNeverMatchesNormalOnTheSameBoard) {
+  // 困难档与中等档必须是不同的分布 —— 否则难度选择形同虚设。
   const std::uint64_t board = BoardMaxInCenter();
-  for (const auto& [name, difficulty] :
-       std::vector<std::pair<const char*, Difficulty>>{{"easy", Difficulty::kEasy},
-                                                       {"normal", Difficulty::kNormal},
-                                                       {"hard", Difficulty::kHard}}) {
-    Game game(31337, difficulty);
+  const std::array<double, kCellCount> hard = SpawnWeights(board, Difficulty::kHard);
+  const std::array<double, kCellCount> normal = SpawnWeights(board, Difficulty::kNormal);
+
+  double worst = 0.0;
+  for (int i = 0; i < kCellCount; ++i) {
+    worst = std::max(
+        worst, std::abs(hard[static_cast<std::size_t>(i)] - normal[static_cast<std::size_t>(i)]));
+  }
+  EXPECT_GT(worst, 0.01) << "困难档与中等档的分布几乎相同（最大差 " << worst << "）";
+}
+
+// ---------------------------------------------------------------------------
+// 数值概率随难度变化：简单 10% / 中等 15% / 困难 20% 出 4
+// ---------------------------------------------------------------------------
+
+TEST(DifficultySpawn, FourSpawnRateFollowsDifficulty) {
+  struct Case {
+    const char* name;
+    Difficulty difficulty;
+    double expected;
+  };
+  const std::vector<Case> cases = {
+      {"简单", Difficulty::kEasy, 0.10},
+      {"中等", Difficulty::kNormal, 0.15},
+      {"困难", Difficulty::kHard, 0.20},
+  };
+
+  for (const Case& item : cases) {
+    const std::vector<Sample> samples = SampleSpawns(item.difficulty, BoardMaxInCenter(), kTrials);
     int fours = 0;
-    for (int i = 0; i < kTrials; ++i) {
-      game.SetBoardForTesting(board);
-      if (game.SpawnRandomTile().exponent == 2) ++fours;
+    int total = 0;
+    for (const Sample& sample : samples) {
+      fours += sample.four_count;
+      total += sample.count;
     }
-    const double rate = static_cast<double>(fours) / kTrials;
-    EXPECT_NEAR(rate, 0.10, 0.015) << name << " 档的 4 出现率应仍是 10%";
+    ASSERT_GT(total, 0);
+    const double rate = static_cast<double>(fours) / static_cast<double>(total);
+    // 20000 次、p≈0.15 时标准误约 0.0025，容差 0.015 留足余量
+    EXPECT_NEAR(rate, item.expected, 0.015)
+        << item.name << " 档出 4 的实际比例是 " << rate << "，规则要求 " << item.expected;
   }
 }
 
@@ -572,7 +471,7 @@ TEST(DifficultySpawn, TileValuesStayAt90PercentTwos) {
 // 随机流结构
 // ---------------------------------------------------------------------------
 
-TEST(DifficultySpawn, NormalMatchesLegacyBehaviour) {
+TEST(DifficultySpawn, DefaultDifficultyIsNormal) {
   // 默认难度必须是 normal：不传难度的调用方（跑批、自检、历史基准）
   // 拿到的必须是标准 2048，否则历史分数全部作废。
   Game explicit_normal(777, Difficulty::kNormal);
@@ -803,51 +702,6 @@ TEST(DifficultyWorldModel, EasyWeightsFavourCorners) {
     EXPECT_LT(weights[static_cast<std::size_t>(i)], 1.0 / 15.0)
         << "非角落 " << i << " 的权重不该高于均匀值";
   }
-}
-
-TEST(DifficultyWorldModel, HardWeightsFavourNeighboursOfMax) {
-  const std::uint64_t board = BoardMaxInCenter();
-  const MaxCell max_cell = FirstMaxCell(board);
-  const std::array<double, kCellCount> weights = SpawnWeights(board, Difficulty::kHard);
-
-  for (int i = 0; i < kCellCount; ++i) {
-    if (GetExponent(board, i) != 0) continue;
-    const int row = i / kBoardSize;
-    const int col = i % kBoardSize;
-    if (IsAdjacent(row, col, max_cell.row, max_cell.col)) {
-      EXPECT_GT(weights[static_cast<std::size_t>(i)], 1.0 / 15.0)
-          << "相邻格 " << i << " 的权重没有高于均匀值";
-    } else {
-      EXPECT_LT(weights[static_cast<std::size_t>(i)], 1.0 / 15.0)
-          << "非相邻格 " << i << " 的权重不该高于均匀值";
-    }
-  }
-}
-
-TEST(DifficultyWorldModel, HardBiasMovesToSecondaryTileWhenMaxIsBlocked) {
-  // 用户指出的规则：最大块被围死时，偏置**退到"下一个有空位的大块"旁边**，
-  // 而不是关闭。世界模型（SpawnWeights）必须表现同一件事 ——
-  // 否则 AI 会以为"全盘均匀"，而实际游戏把 80% 的新块堆在次级大块旁边，
-  // 于是 AI 严重低估那片区域的风险。
-  const std::uint64_t board = BoardSecondaryMovable();
-  ASSERT_EQ(EmptyNeighboursOfMax(board), 0) << "盘面自检：最大块四邻必须全被占";
-  ASSERT_EQ(LargestMovableExponent(board), 2) << "盘面自检：应当退到等级 2（4 那一档）";
-
-  const std::array<double, kCellCount> weights = SpawnWeights(board, Difficulty::kHard);
-  const int empties = EmptyCount(board);
-
-  // (0,2) 是 (0,1) 那个 4 的唯一空邻格（也是等级 2 行优先第一个的邻格），
-  // 所以它应当拿到 0.8 的偏置份额 + 0.2/empties 的均匀份额。
-  constexpr int kBiasedIndex = 2;  // (0,2)
-  ASSERT_EQ(GetExponent(board, kBiasedIndex), 0);
-  ASSERT_EQ(GetExponent(board, 1), 2) << "盘面自检：(0,1) 应当是 4";
-
-  const double biased = weights[kBiasedIndex];
-  const double others = weights[2 * kBoardSize + 2];  // (2,2)，不在偏置里
-  EXPECT_GT(biased, others * 3.0) << "偏置格 " << biased << " 应显著高于非偏置格 " << others
-                                  << " —— 世界模型没有跟着规则退到次级大块";
-  EXPECT_NEAR(biased, 0.8 + 0.2 / static_cast<double>(empties), 1e-9);
-  EXPECT_NEAR(others, 0.2 / static_cast<double>(empties), 1e-9);
 }
 
 TEST(DifficultyWorldModel, WeightsAreZeroOnOccupiedCells) {

@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cassert>
+#include <cmath>
+#include <vector>
 
 namespace ai2048 {
 
@@ -22,80 +24,242 @@ namespace {
   return cells;
 }
 
-/** 四角的下标，顺序固定（左上、右上、左下、右下）。 */
-inline constexpr std::array<int, 4> kCornerIndices = {0, 3, 12, 15};
+// ---------------------------------------------------------------------------
+// 位置评分：所有分值都是**百分数的整数**（1.5 分写成 150），
+// 这样整条链路没有浮点，逐字节可复现的承诺不受影响。
+//
+// 直接照搬文档《方块生成策略》给出的评分，逐项对应：
+//   简单档 = 边缘 + 角落 + 周围空旷 + 可合并 − 拥挤 − 贴大块
+//   困难档 = 拥挤 + 断裂 + 贴大块 − 可合并 − 角落 − 边缘
+//
+// 两档都用 Max(score, 0) 收尾：负分位置不该被"负权"排挤，
+// 否则会出现"因为太难算所以反而不会被选中"的反直觉行为。
+// ---------------------------------------------------------------------------
 
-/** 收集**空的**角落下标。顺序与 kCornerIndices 一致，保证可复现。 */
-[[nodiscard]] std::array<int, 4> CollectEmptyCorners(std::uint64_t board, int* count) noexcept {
-  std::array<int, 4> corners{};
-  int n = 0;
-  for (const int index : kCornerIndices) {
-    if (GetExponent(board, index) == 0) {
-      corners[static_cast<std::size_t>(n)] = index;
-      ++n;
-    }
-  }
-  *count = n;
-  return corners;
+/** 邻居偏移，顺序固定为「上、下、左、右」—— 它决定评分的确定性。 */
+inline constexpr std::array<std::array<int, 2>, 4> kNeighbourOffsets = {
+    {{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
+
+[[nodiscard]] constexpr bool IsEdgeCell(int row, int col) noexcept {
+  return row == 0 || row == kBoardSize - 1 || col == 0 || col == kBoardSize - 1;
+}
+
+[[nodiscard]] constexpr bool IsCornerCell(int row, int col) noexcept {
+  return (row == 0 || row == kBoardSize - 1) && (col == 0 || col == kBoardSize - 1);
 }
 
 /**
- * 收集"与**当前有空位的最大方块**相邻"的空格下标。
+ * 简单档：这个空位对玩家有多**安全**。
  *
- * 规则按用户明确指示演进：原先只找**最大块**，它旁边没空位时偏置就直接关闭。
- * 但那样在残局几乎失效 —— 最大块往往被围死，而盘面上还有其它大块旁边有空位，
- * 那正是最该放新块的地方。
- *
- * 现在改为：**按等级从高到低**找第一个"四周有空位"的方块，在它的相邻空格里选。
- * 例如 2048 被围死、但 128 旁边有空，就放在 128 旁边。
- *
- * 多个同值方块时取**行优先第一个**（规则必须确定，否则同种子不可复现）。
- * 邻居顺序固定为「上、下、左、右」—— 它决定"取第 k 个"的结果。
+ * 「安全」不是"周围越空越好"，而是"新块容易被纳入现有布局"。
+ * 所以旁边有 2 反而加分 —— 简单档 90% 出 2，落下去可能立刻能合并。
  */
-[[nodiscard]] std::array<int, kCellCount> CollectEmptyNextToLargestMovable(std::uint64_t board,
-                                                                           int* count) noexcept {
-  std::array<int, kCellCount> cells{};
-  *count = 0;
+[[nodiscard]] int SafeScore(std::uint64_t board, int index) noexcept {
+  const int row = index / kBoardSize;
+  const int col = index % kBoardSize;
+  int score = 0;
 
-  constexpr std::array<std::array<int, 2>, 4> kOffsets = {{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
+  if (IsEdgeCell(row, col)) score += 150;
+  if (IsCornerCell(row, col)) score += 250;
 
-  // 棋盘最多 16 格、等级最多 kMaxExponent，直接逐级扫描即可。
-  for (int exponent = MaxExponent(board); exponent >= 1; --exponent) {
-    // **必须检查该等级的每一个方块**，不能只看行优先第一个就跳下一级。
-    //
-    // 这里踩过坑：原先写成"找到第一个该等级的方块 → 检查它的四邻 →
-    // 不管有没有空位都 break 出内层循环"，结果是**只有每个等级里
-    // 位置最靠前的那个方块**能触发偏置。棋盘上大块多集中在左上时，
-    // 表现就是"新方块全挤在左上角"，而规则看上去还"在工作"。
-    for (int index = 0; index < kCellCount; ++index) {
-      if (GetExponent(board, index) != exponent) continue;
-
-      const int row = index / kBoardSize;
-      const int col = index % kBoardSize;
-      int n = 0;
-      for (const auto& offset : kOffsets) {
-        const int r = row + offset[0];
-        const int c = col + offset[1];
-        if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
-        const int neighbour = r * kBoardSize + c;
-        if (GetExponent(board, neighbour) == 0) {
-          cells[static_cast<std::size_t>(n)] = neighbour;
-          ++n;
-        }
-      }
-      if (n > 0) {
-        *count = n;  // 这个方块旁边有空位 —— 就是它
-        return cells;
-      }
-      // 这个方块被围死，继续看**同等级**的下一个
+  for (const auto& offset : kNeighbourOffsets) {
+    const int r = row + offset[0];
+    const int c = col + offset[1];
+    if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
+    const int exponent = GetExponent(board, r * kBoardSize + c);
+    if (exponent == 0) {
+      score += 80;  // 周围空旷
+    } else {
+      score -= 40;  // 拥挤
+      // 简单档有 90% 出 2（指数 1）、10% 出 4（指数 2）：
+      // 用期望值加权，而不是"只要看见 2 就给满分"。
+      if (exponent == 1) score += 135;
+      if (exponent == 2) score += 15;
+      if (exponent >= 6) score -= 30;  // 2^6 = 64 及以上的大块
     }
-    // 这个等级的所有方块都被围死，往下一个等级找
+  }
+  return score < 0 ? 0 : score;
+}
+
+/** 贴着一个多大的块？越大越"不利"（块周围被堵住的价值更高）。 */
+[[nodiscard]] constexpr int HighValuePenalty(int exponent) noexcept {
+  // 指数 5=32, 7=128, 9=512（文档按数值 32/128/512 分档）
+  if (exponent >= 9) return 200;
+  if (exponent >= 7) return 140;
+  if (exponent >= 5) return 80;
+  if (exponent >= 3) return 40;  // 数值 8
+  return 0;
+}
+
+/**
+ * 困难档：这个空位对玩家有多**不利**。
+ *
+ * 关键的一条是**减去立即合并的机会**。旧实现只找"最拥挤的位置"，
+ * 而最拥挤处常常紧挨同值块 —— 新块落下去白送一次合并，等于在帮玩家。
+ * 文档明确指出这一点，这里按「拥挤 + 断裂 + 贴大块 − 可合并 − 角/边」
+ * 一起算。
+ */
+[[nodiscard]] int HostileScore(std::uint64_t board, int index) noexcept {
+  const int row = index / kBoardSize;
+  const int col = index % kBoardSize;
+  int score = 0;
+
+  for (const auto& offset : kNeighbourOffsets) {
+    const int r = row + offset[0];
+    const int c = col + offset[1];
+    if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
+    const int exponent = GetExponent(board, r * kBoardSize + c);
+    if (exponent == 0) continue;          // 空邻居不加分：拥挤度由非空邻居那边算
+    score += 120;                         // 拥挤度
+    score += HighValuePenalty(exponent);  // 贴高价值块
+    if (exponent == 1) score -= 96;       // 80% × 1.2：能立刻合并 → 对玩家有利
+    if (exponent == 2) score -= 24;       // 20% × 1.2
   }
 
-  return cells;
+  // ⚠️ 这里**曾经**还有一项 `score += (4 - empty_neighbours) * 50;`，
+  // 是我自己加的，文档的评分表里没有它。它是个真 bug，测试抓住了：
+  //
+  // 「空邻居少」与「occupied 多」是同一件事的两种说法（四邻非空即满），
+  // 所以那一项等于把"拥挤度"**加倍计权**，而且加到 +150 之后完全盖过了
+  // −192 的合并惩罚 —— 结果一个"贴着 8、落下去就能合并"的格子
+  // （对玩家明显有利）拿到了全场最高分，与设计意图正好相反。
+  //
+  // 与本项目其它几次教训一致：缺失的从来不是"再加一项"，
+  // 而是删掉信息重叠的那一项。四个评分项各自已经表达了意图。
+
+  // 断裂点：空位夹在两个**不同**数字之间，落子会打断排列。
+  // 横竖两对，各自判断"两侧都有块且数值不同"。
+  for (int axis = 0; axis < 2; ++axis) {
+    const int dr = axis == 0 ? 1 : 0;
+    const int dc = axis == 0 ? 0 : 1;
+    const int r1 = row - dr;
+    const int c1 = col - dc;
+    const int r2 = row + dr;
+    const int c2 = col + dc;
+    if (r1 < 0 || r1 >= kBoardSize || c1 < 0 || c1 >= kBoardSize) continue;
+    if (r2 < 0 || r2 >= kBoardSize || c2 < 0 || c2 >= kBoardSize) continue;
+    const int a = GetExponent(board, r1 * kBoardSize + c1);
+    const int b = GetExponent(board, r2 * kBoardSize + c2);
+    if (a != 0 && b != 0 && a != b) score += 150;
+    if (a != 0 && b != 0) {
+      const int hi = a > b ? a : b;
+      const int lo = a > b ? b : a;
+      if (hi >= lo + 2) score += 150;  // 差距 ≥ 4 倍（指数差 2）
+    }
+  }
+
+  // 困难档刻意**不**偏向角落：角落对玩家有利，一直往角上放会让
+  // "角落策略"继续过强。
+  if (IsCornerCell(row, col)) score -= 80;
+  if (IsEdgeCell(row, col)) score -= 30;
+
+  return score < 0 ? 0 : score;
+}
+
+// ---------------------------------------------------------------------------
+// 权重 = exp(score × strength)
+//
+// ⚠️ **不能用 std::exp。** 本项目承诺"同种子逐字节一致"，而 libm 的 exp
+// 不保证跨编译器/平台逐位相同。这里是**查表**：score 是百分数整数，
+// strength 是 /100，所以指数就是 (score × strength) / 10000 —— 一个有理数。
+// 表的范围覆盖 score ∈ [0, 12.00]（一千二百项），足够宽：
+// 实测困难档的评分在 -400 ~ 800 之间。
+//
+// 表用 double 算**一次**再取整。这不破坏可复现性：取值完全由源码里的
+// 常量与 IEEE-754 四则运算决定，任何平台上都得到同一张表。
+// 表本身（1201 个 int64）放进静态存储，只算一次。
+// ---------------------------------------------------------------------------
+inline constexpr int kWeightTableLimit = 1200;  // score 上限 12.00
+
+[[nodiscard]] const std::vector<std::int64_t>& WeightTable(bool hard) noexcept {
+  static const std::vector<std::int64_t> easy_table = [] {
+    std::vector<std::int64_t> table(kWeightTableLimit + 1);
+    for (int i = 0; i <= kWeightTableLimit; ++i) {
+      const double exponent = static_cast<double>(i) * kEasyWeightStrength / 10000.0;
+      table[static_cast<std::size_t>(i)] =
+          static_cast<std::int64_t>(std::exp(exponent) * 256.0 + 0.5);
+    }
+    return table;
+  }();
+  static const std::vector<std::int64_t> hard_table = [] {
+    std::vector<std::int64_t> table(kWeightTableLimit + 1);
+    for (int i = 0; i <= kWeightTableLimit; ++i) {
+      const double exponent = static_cast<double>(i) * kHardWeightStrength / 10000.0;
+      table[static_cast<std::size_t>(i)] =
+          static_cast<std::int64_t>(std::exp(exponent) * 256.0 + 0.5);
+    }
+    return table;
+  }();
+  return hard ? hard_table : easy_table;
+}
+
+/**
+ * score（百分数）→ 权重。
+ *
+ * 先**饱和**再查表（见 kScoreSaturation）。饱和不改变排序，只压缩极端值 ——
+ * 没有它，困难档在极端局面下的评分能累加到 1960，指数化后 max/min 权重比
+ * 达到千万量级，加权就退化成"必定落同一格"，也就是文档警告的「系统作弊感」。
+ */
+[[nodiscard]] std::int64_t WeightFor(int score, bool hard) noexcept {
+  int saturated = score > kScoreSaturation ? kScoreSaturation : score;
+  if (saturated < 0) saturated = 0;
+  return WeightTable(hard)[static_cast<std::size_t>(saturated)];
 }
 
 }  // namespace
+
+// --- 对外暴露：AI 的随机节点必须复用同一套评分与权重 -------------------------
+
+int SafeSpawnScore(std::uint64_t board, int index) noexcept { return SafeScore(board, index); }
+
+int HostileSpawnScore(std::uint64_t board, int index) noexcept {
+  return HostileScore(board, index);
+}
+
+std::array<double, kCellCount> SpawnCellWeights(std::uint64_t board,
+                                                Difficulty difficulty) noexcept {
+  std::array<double, kCellCount> weights{};
+  weights.fill(0.0);
+
+  int empty_count = 0;
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) == 0) ++empty_count;
+  }
+  if (empty_count == 0) return weights;
+
+  std::uint64_t weighted_share = 0;
+  if (difficulty == Difficulty::kEasy) {
+    weighted_share = kEasyWeightedShare;
+  } else if (difficulty == Difficulty::kHard) {
+    weighted_share = kHardWeightedShare;
+  }
+
+  // 先算每个空格的原始权重，并求出总和 —— 纯随机分支的"每格份额"
+  // 依赖总权重（见头文件里的公式）。
+  std::int64_t total = 0;
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) != 0) continue;
+    const int score =
+        difficulty == Difficulty::kEasy ? SafeScore(board, i) : HostileScore(board, i);
+    total += WeightFor(score, difficulty == Difficulty::kHard);
+  }
+  if (total <= 0) total = 1;
+
+  const double weighted_fraction = static_cast<double>(weighted_share) / kSpawnValueDenominator;
+  const double uniform_fraction = 1.0 - weighted_fraction;
+  const double per_cell_uniform =
+      uniform_fraction * (static_cast<double>(total) / static_cast<double>(empty_count));
+
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) != 0) continue;
+    const int score =
+        difficulty == Difficulty::kEasy ? SafeScore(board, i) : HostileScore(board, i);
+    const double raw =
+        static_cast<double>(WeightFor(score, difficulty == Difficulty::kHard)) * weighted_fraction;
+    weights[static_cast<std::size_t>(i)] = raw + per_cell_uniform;
+  }
+  return weights;
+}
 
 const char* DifficultyName(Difficulty difficulty) noexcept {
   switch (difficulty) {
@@ -132,39 +296,77 @@ SpawnRecord Game::SpawnRandomTile() noexcept {
   const std::array<int, kCellCount> empty_cells = CollectEmptyCells(board_, &empty_count);
   if (empty_count == 0) return record;  // exponent 保持 0，调用方据此判断"没生成"
 
-  // 位置选择的随机数**恰好消耗一次**，无论走哪条分支。
+  // ---------------------------------------------------------------------------
+  // 随机数消耗：**恒定三次**，与难度、盘面、分支都无关。
   //
-  // 这是刻意的：如果"偏向分支"少消耗或多消耗一次随机数，那么同一档难度下
-  // 一次生成就会改变后续整局的随机流，不同分支之间再也没法比较。
-  // 参考实现也是这个结构（game.js:160-164），两边保持一致才能对拍。
+  // 这是本项目最硬的一条规则（同种子逐字节一致）。旧实现存在一个隐蔽缺陷：
+  // 它用 Chance() 决定"要不要走偏置"，命中后再调一次 NextBounded 选具体格子 ——
+  // 于是"偏置命中"与"未命中"消耗的随机数**个数不同**，同一种子在不同难度的
+  // 后续随机流就此分叉，跨难度对比时根本说不清差异来自哪里。
+  //
+  // 现在固定为：
+  //   第 1 次 —— 决定走「加权」还是「纯随机」
+  //   第 2 次 —— 在选定的分布里挑格子（两种分布都**恰好**用掉这一次）
+  //   第 3 次 —— 决定数值是 2 还是 4
+  // 加权分布是"一次随机数按权重区间落点"，不是"逐个位置掷骰子"，
+  // 所以它和均匀分布一样只消耗一次。
+  // ---------------------------------------------------------------------------
+  const std::uint64_t roll_branch = rng_.NextBounded(kSpawnValueDenominator);
+  const std::uint64_t roll_cell = rng_.NextBounded(kSpawnValueDenominator);
+
   int index = -1;
+
+  std::uint64_t weighted_share = 0;
   if (difficulty_ == Difficulty::kEasy) {
-    int corner_count = 0;
-    const std::array<int, 4> corners = CollectEmptyCorners(board_, &corner_count);
-    if (corner_count > 0 && rng_.Chance(kEasyCornerNumerator, kDifficultyDenominator)) {
-      const int slot = static_cast<int>(rng_.NextBounded(static_cast<std::uint64_t>(corner_count)));
-      index = corners[static_cast<std::size_t>(slot)];
-    }
+    weighted_share = kEasyWeightedShare;
   } else if (difficulty_ == Difficulty::kHard) {
-    int near_count = 0;
-    const std::array<int, kCellCount> near_cells =
-        CollectEmptyNextToLargestMovable(board_, &near_count);
-    if (near_count > 0 && rng_.Chance(kHardNearMaxNumerator, kDifficultyDenominator)) {
-      const int slot = static_cast<int>(rng_.NextBounded(static_cast<std::uint64_t>(near_count)));
-      index = near_cells[static_cast<std::size_t>(slot)];
+    weighted_share = kHardWeightedShare;
+  }
+
+  if (weighted_share > 0 && roll_branch < weighted_share) {
+    // 加权分支：算出每个空位的权重，再让第 2 次随机数按权重区间落点。
+    std::int64_t total = 0;
+    std::array<std::int64_t, kCellCount> weights{};
+    for (int i = 0; i < empty_count; ++i) {
+      const int cell = empty_cells[static_cast<std::size_t>(i)];
+      const int score =
+          difficulty_ == Difficulty::kEasy ? SafeScore(board_, cell) : HostileScore(board_, cell);
+      const std::int64_t weight = WeightFor(score, difficulty_ == Difficulty::kHard);
+      weights[static_cast<std::size_t>(i)] = weight;
+      total += weight;
+    }
+
+    if (total > 0) {
+      // 把 [0,1000) 映射到 [0,total)。用 NextBounded 会多消耗一次随机数，
+      // 所以这里直接用已有的 roll_cell 做定点映射。
+      const std::int64_t pick = static_cast<std::int64_t>(
+          (roll_cell * static_cast<std::uint64_t>(total)) / kSpawnValueDenominator);
+      std::int64_t acc = 0;
+      for (int i = 0; i < empty_count; ++i) {
+        acc += weights[static_cast<std::size_t>(i)];
+        if (pick < acc) {
+          index = empty_cells[static_cast<std::size_t>(i)];
+          break;
+        }
+      }
+      // 浮点/取整的边界情况：落到最后一个
+      if (index < 0) index = empty_cells[static_cast<std::size_t>(empty_count - 1)];
     }
   }
 
   if (index < 0) {
-    // 全盘均匀：标准 2048，也是 kNormal 唯一走的分支，
-    // 以及另两档"偏置没触发"或"没有可用偏置位置"时的退路。
-    const int slot = static_cast<int>(rng_.NextBounded(static_cast<std::uint64_t>(empty_count)));
-    index = empty_cells[static_cast<std::size_t>(slot)];
+    // 纯随机分支：简单/困难档的兜底，也是 kNormal 唯一走的分支。
+    // 没有它，简单档会过于温和、困难档会显得在作弊。
+    index =
+        empty_cells[static_cast<std::size_t>(roll_cell % static_cast<std::uint64_t>(empty_count))];
   }
 
-  // 先决定数值再落子。这里的消耗顺序（先位置后数值）是**规则的一部分**：
-  // 改动它会改变所有历史种子集的结果，必须同步提升规则集版本。
-  const int exponent = rng_.Chance(kFourSpawnNumerator, kSpawnDenominator) ? 2 : 1;
+  // 数值：出 4 的概率随难度变化（简单 10% / 中等 15% / 困难 20%）。
+  std::uint64_t four_threshold = kFourSpawnNormal;
+  if (difficulty_ == Difficulty::kEasy) four_threshold = kFourSpawnEasy;
+  if (difficulty_ == Difficulty::kHard) four_threshold = kFourSpawnHard;
+  const int exponent = roll_branch < four_threshold ? 2 : 1;
+
   board_ = SetExponent(board_, index, exponent);
 
   record.row = index / kBoardSize;
