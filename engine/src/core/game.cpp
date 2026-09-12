@@ -365,7 +365,22 @@ SpawnRecord Game::SpawnRandomTile() noexcept {
   std::uint64_t four_threshold = kFourSpawnNormal;
   if (difficulty_ == Difficulty::kEasy) four_threshold = kFourSpawnEasy;
   if (difficulty_ == Difficulty::kHard) four_threshold = kFourSpawnHard;
-  const int exponent = roll_branch < four_threshold ? 2 : 1;
+
+  // ⚠️ **必须取一个新的随机数**，不能复用 roll_branch。
+  //
+  // 这里踩过一个很隐蔽的坑：原先写成 `roll_branch < four_threshold`，
+  // 于是"生成 2 还是 4"由**位置偏置那一次随机数**决定。两个后果：
+  //   1. 每次生成只消耗 2 个随机数而不是 3 个 → 整个随机流每次生成错位一格，
+  //      前端与引擎再也对不上，而且同一种子在不同难度下分叉。
+  //   2. 数值与位置**统计相关**：简单/困难档只在 roll_branch < 800/750 时
+  //      才走加权分支，而出 4 的门槛只有 100~200 —— 也就是"走加权分支时
+  //      几乎必然出 2"，出 4 的实际概率被严重压低且与位置耦合。三档的
+  //      期望生成值（2.2/2.3/2.4）实际都没有达到。
+  //
+  // 这个 bug 是靠"给 Rng 加消耗计数器"发现的：构造 Game(1) 只消耗了 4 次
+  // 而不是 6 次。**光读代码看不出来，必须做这种运行时计数。**
+  const std::uint64_t roll_value = rng_.NextBounded(kSpawnValueDenominator);
+  const int exponent = roll_value < four_threshold ? 2 : 1;
 
   board_ = SetExponent(board_, index, exponent);
 

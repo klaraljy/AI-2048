@@ -220,21 +220,44 @@ function testRealGames() {
   );
 }
 
-/** 2 与 4 的比例应为 90% / 10%。 */
+/**
+ * 2 与 4 的比例**随难度变化**（2026-09-12 起）。
+ *
+ *   easy 10%   normal 15%   hard 20%
+ *
+ * ⚠️ 旧版本这里断言"三档都是 10%"。那次修订推翻了先前
+ * "难度只改位置、不改取值概率"的决定，理由见 AGENTS.md 的难度规格。
+ */
 function testTileValues() {
-  console.log('\n[3] 新方块取值的比例');
-  let twos = 0;
-  let fours = 0;
-  for (let i = 0; i < 20000; i++) {
-    const g = new Game(i);
-    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) g.board[r][c] = 0;
-    const spawn = g._spawn();
-    if (spawn.exponent === 1) twos++;
-    else if (spawn.exponent === 2) fours++;
+  console.log('\n[3] 新方块取值的比例（随难度变化）');
+
+  const expectations = [
+    { difficulty: 'easy', expected: 10 },
+    { difficulty: 'normal', expected: 15 },
+    { difficulty: 'hard', expected: 20 },
+  ];
+
+  for (const { difficulty, expected } of expectations) {
+    let twos = 0;
+    let fours = 0;
+    for (let i = 0; i < 20000; i++) {
+      // 构造后先清空棋盘，保证 _spawn 面对的是空盘 —— 否则盘面演化会把
+      // 分布带偏，测出来的是"对局中的比例"而不是规则本身。
+      const g = new Game(i, difficulty);
+      for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) g.board[r][c] = 0;
+      const spawn = g._spawn();
+      if (spawn.exponent === 1) twos++;
+      else if (spawn.exponent === 2) fours++;
+    }
+    const fourPct = (fours / (twos + fours)) * 100;
+    console.log(`    ${difficulty.padEnd(6)} 4 占 ${fourPct.toFixed(2)}%（应为 ${expected}%）`);
+    // 20000 次、p≈0.15 时标准误约 0.25%，容差 1% 留足余量
+    check(
+      `${difficulty} 档 4 的比例接近 ${expected}%（±1%）`,
+      Math.abs(fourPct - expected) < 1,
+      `${fourPct.toFixed(2)}%`
+    );
   }
-  const fourPct = (fours / (twos + fours)) * 100;
-  console.log(`    2 出现 ${twos} 次，4 出现 ${fours} 次 → 4 占 ${fourPct.toFixed(2)}%`);
-  check('4 的比例接近 10%（±1%）', Math.abs(fourPct - 10) < 1, `${fourPct.toFixed(2)}%`);
 }
 
 console.log('=== 新方块生成位置分布测试 ===');
