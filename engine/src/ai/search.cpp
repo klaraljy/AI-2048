@@ -12,10 +12,6 @@ namespace ai2048 {
 
 namespace {
 
-// 生成 2 与 4 的概率。规则固定：90% 出 2。
-constexpr double kProbFour = 0.1;
-constexpr double kProbTwo = 0.9;
-
 // 节点类型：同一个棋盘在 max 节点与 chance 节点上的含义不同，
 // 必须编进置换表的 key，混用会给出错误的值。
 constexpr std::uint8_t kKindMax = 1;
@@ -206,6 +202,11 @@ void TranspositionTable::Store(std::uint64_t board, int depth, std::uint8_t kind
   const std::uint64_t key = impl_->use_symmetry_keys ? CanonicalKey(board) : board;
   Impl::Entry& entry = impl_->entries[MixHash(key, kind) & impl_->mask];
   // 简单替换：新结果总是写入。命中率靠容量保证。
+  //
+  // 试过"深度优先替换 + 2 路组相联"（浅层结果不许挤掉深层结果），实测**没有收益**：
+  // 每步节点数基本不变（约 6.4k），命中/写入反而从 37% 掉到 26%。
+  // 原因大概是深层条目本来就少，"不让浅层挤掉深层"省的查找次数抵不上
+  // 桶结构带来的额外冲突。既然测不出好处，就保留最简单、已经验证过的版本。
   entry.key = key;
   entry.value = value;
   entry.depth = static_cast<std::uint8_t>(std::min(depth, 255));
@@ -370,6 +371,10 @@ class Searcher {
       limit = std::min(empty_count, config_.chance_sample_limit);
     }
 
+    // 2 与 4 的概率按**当前难度**取，与实际生成规则一致（见 FourSpawnProbability）。
+    const double p_four = FourSpawnProbability(config_.difficulty);
+    const double p_two = 1.0 - p_four;
+
     float total = 0.0F;
     double weight_sum = 0.0;
 
@@ -377,7 +382,7 @@ class Searcher {
       const int index = empty_cells[static_cast<std::size_t>(i)];
       const double cell_share = per_cell_weight(index) * probability;
       for (int exponent = 1; exponent <= 2; ++exponent) {
-        const double branch_probability = cell_share * (exponent == 2 ? kProbFour : kProbTwo);
+        const double branch_probability = cell_share * (exponent == 2 ? p_four : p_two);
         // 概率剪枝：极不可能的分支直接丢弃。
         if (config_.enable_probability_cutoff && branch_probability < config_.probability_cutoff) {
           ++stats_.pruned_by_probability;
@@ -473,12 +478,43 @@ class Searcher {
 // 对外接口
 // ---------------------------------------------------------------------------
 
+double FourSpawnProbability(Difficulty difficulty) noexcept {
+  switch (difficulty) {
+    case Difficulty::kEasy:
+      return static_cast<double>(kFourSpawnEasy) / static_cast<double>(kSpawnValueDenominator);
+    case Difficulty::kHard:
+      return static_cast<double>(kFourSpawnHard) / static_cast<double>(kSpawnValueDenominator);
+    case Difficulty::kNormal:
+    default:
+      return static_cast<double>(kFourSpawnNormal) / static_cast<double>(kSpawnValueDenominator);
+  }
+}
+
 int AdaptiveDepth(std::uint64_t board, const SearchConfig& config) noexcept {
   const int empty = CountEmptyCells(board);
   int depth = config.base_depth;
+
+  // 旧版只看空格数。问题是**空格多 ≠ 宽松**：棋盘中央被高牌隔成两半时，
+  // 空位可能还有 6~8 个，可走方向却只剩 1 个。旧策略会判成"宽松"反而减深度，
+  // 恰恰在最需要算清的局面上下手最轻。所以现在两个信号都给：
+  //
+  //   空格多  → 容错高，减一层省钱
+  //   方向少  → 局面危险，加层（这是**新增**的，也是更准的那个）
+  //
+  // 两者叠加时先减后加，最后统一 clamp。
   if (empty >= config.many_empty_threshold) depth -= config.depth_penalty_when_many_empty;
   if (empty <= config.few_empty_threshold) depth += config.depth_bonus_when_few_empty;
-  return std::clamp(depth, config.min_depth, config.max_depth);
+
+  // CountMobility 要试走 4 个方向，是这里唯一有实际开销的调用；
+  // 但自适应深度每局只算一次（每次决策一次），代价可以忽略。
+  if (CountMobility(board) <= config.few_mobility_threshold) {
+    depth += config.depth_bonus_when_few_mobility;
+  }
+
+  // 对齐到偶数层。所有调整都已经是偶数，这一步是**兜底**：
+  // 调用方或以后有人把某项调整改成奇数时，至少这里不会静默丢掉加成，
+  // 而是把它变成可预测的向下取整。
+  return AlignToEvenLayers(std::clamp(depth, config.min_depth, config.max_depth));
 }
 
 SearchResult SearchBestMove(std::uint64_t board, const SearchConfig& config,
@@ -516,17 +552,31 @@ SearchResult SearchBestMove(std::uint64_t board, const SearchConfig& config,
 
   // 依次加深：先浅后深。这样即使超时，手里也有一个可用的结果 ——
   // 这也是"超时也必须返回合法步"的保证。
-  const int target_depth = AdaptiveDepth(board, config);
+  //
+  // 目标深度对齐到偶数层：循环只走偶数，未对齐的话奇数会被白白丢掉
+  // （见 AlignToEvenLayers 的说明 —— 这个坑真的踩过）。
+  const int target_depth = AlignToEvenLayers(AdaptiveDepth(board, config));
   Searcher searcher(config, table);
 
   std::array<float, 4> best_value{};
   best_value.fill(-std::numeric_limits<float>::infinity());
   std::array<int, 4> order = {0, 1, 2, 3};
 
+  // 超时判据用"这一轮搜完了几个**合法**方向"。
+  //
+  // ⚠️ 不能用 `improved_any`（只要搜过至少一个就采用）。那样在超时时会把
+  // "部分方向是新深度的值、其余还是旧深度的值"混在一起比较 —— 而
+  // 深层搜索**整体**比浅层更悲观（多算了对手的好运气），所以新值系统性偏低，
+  // 混合比较等于在惩罚"碰巧被排在前面、来得及重搜"的方向。
+  //
+  // 正确做法：只有**全部**合法方向都在本轮拿到了新值，这一轮才可采信。
+  const int legal_total = legal_count;
+  int deepest_complete = 0;
+
   for (int depth = 2; depth <= target_depth; depth += 2) {
     std::array<float, 4> this_value{};
     this_value.fill(-std::numeric_limits<float>::infinity());
-    bool improved_any = false;
+    int evaluated = 0;
 
     // 按上一轮的值从高到低搜，好的分支先算，超时时至少手里有它。
     std::sort(order.begin(), order.end(), [&](int a, int b) {
@@ -539,7 +589,7 @@ SearchResult SearchBestMove(std::uint64_t board, const SearchConfig& config,
 
       const MoveResult move = ApplyMove(board, candidates[i].direction);
       this_value[i] = searcher.SearchChance(move.board, depth - 1, 1.0);
-      improved_any = true;
+      ++evaluated;
 
       if (searcher.OutOfTime()) {
         searcher.stats_.timed_out = true;
@@ -547,12 +597,18 @@ SearchResult SearchBestMove(std::uint64_t board, const SearchConfig& config,
       }
     }
 
-    if (improved_any) {
+    // 只有合法方向全部拿到新值，这一轮才算完成、才允许覆盖上一轮。
+    if (evaluated == legal_total) {
       best_value = this_value;
+      deepest_complete = depth;
       searcher.stats_.reached_depth = depth;
     }
     if (searcher.stats_.timed_out) break;
   }
+
+  // 完成深度记进统计 —— 界面/跑批靠它显示"实际搜到多深"。
+  // 注意 reached_depth 只在完整完成时更新，所以它就是 deepest_complete。
+  (void)deepest_complete;
 
   // 汇总：加上根节点的方向调整，选出最终方向。
   float best_total = -std::numeric_limits<float>::infinity();

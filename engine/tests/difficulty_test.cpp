@@ -31,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include "ai/evaluate.h"
 #include "ai/search.h"
 #include "core/board.h"
 #include "core/game.h"
@@ -725,6 +726,214 @@ TEST(DifficultyWorldModel, FullBoardHasNoWeights) {
     const std::array<double, kCellCount> weights = SpawnWeights(board, difficulty);
     for (const double w : weights) EXPECT_DOUBLE_EQ(w, 0.0);
   }
+}
+
+// ---------------------------------------------------------------------------
+// 搜索侧的世界模型：数值概率必须同样跟着难度走
+// ---------------------------------------------------------------------------
+//
+// 位置走偏了看得出来（分数会奇怪），概率走偏了**看不出来** —— 搜索照样跑，
+// 只是 AI 悄悄变得偏乐观。这里是与实际生成对拍的那道闸门。
+
+TEST(DifficultyWorldModel, FourProbabilityMatchesTheRule) {
+  // 与 Game 用的是同一组常量 —— 这里直接对常量断言，
+  // 常量改了而概率没跟着改时这条会立刻失败。
+  EXPECT_DOUBLE_EQ(
+      FourSpawnProbability(Difficulty::kEasy),
+      static_cast<double>(kFourSpawnEasy) / static_cast<double>(kSpawnValueDenominator));
+  EXPECT_DOUBLE_EQ(
+      FourSpawnProbability(Difficulty::kNormal),
+      static_cast<double>(kFourSpawnNormal) / static_cast<double>(kSpawnValueDenominator));
+  EXPECT_DOUBLE_EQ(
+      FourSpawnProbability(Difficulty::kHard),
+      static_cast<double>(kFourSpawnHard) / static_cast<double>(kSpawnValueDenominator));
+  // 顺便锁住规格本身：10% / 15% / 20%。
+  EXPECT_DOUBLE_EQ(FourSpawnProbability(Difficulty::kEasy), 0.10);
+  EXPECT_DOUBLE_EQ(FourSpawnProbability(Difficulty::kNormal), 0.15);
+  EXPECT_DOUBLE_EQ(FourSpawnProbability(Difficulty::kHard), 0.20);
+}
+
+TEST(DifficultyWorldModel, FourProbabilityIsNotTheOldHardcodedTenPercent) {
+  // 回归测试：这条曾经真的错了很久。
+  // 搜索里写死 0.9/0.1，而 normal/hard 的实际 P(4) 是 15%/20%。
+  // 断言"至少有一档不是 10%" —— 如果哪天有人又把它写回常数，这条会失败。
+  const std::array<double, 3> rates = {FourSpawnProbability(Difficulty::kEasy),
+                                       FourSpawnProbability(Difficulty::kNormal),
+                                       FourSpawnProbability(Difficulty::kHard)};
+  EXPECT_NE(rates[0], rates[2]) << "三档的 P(4) 不可能完全相同 —— 说明又写死了";
+  EXPECT_GT(rates[2], rates[1]);
+  EXPECT_GT(rates[1], rates[0]);
+}
+
+TEST(DifficultyWorldModel, FourProbabilityAgreesWithActualGeneration) {
+  // 与 FourSpawnRateFollowsDifficulty 的区别：那条测的是 **Game 生成**的 4 占比
+  // 是否符合 10/15/20%；这条测的是**搜索假设**是否与之相等。
+  // 两条都跑，才能真正锁住"两个副本一致"。
+  const double tolerance = 0.015;  // 20000 次采样的标准误约 0.0025
+  for (const Difficulty difficulty : {Difficulty::kEasy, Difficulty::kNormal, Difficulty::kHard}) {
+    const std::vector<Sample> samples = SampleSpawns(difficulty, BoardMaxInCenter(), kTrials);
+    int fours = 0;
+    int total = 0;
+    for (const Sample& sample : samples) {
+      fours += sample.four_count;
+      total += sample.count;
+    }
+    ASSERT_GT(total, 0);
+    const double actual = static_cast<double>(fours) / static_cast<double>(total);
+    EXPECT_NEAR(actual, FourSpawnProbability(difficulty), tolerance)
+        << DifficultyName(difficulty) << " 档：实际生成的 P(4) 与搜索的假设不符";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 深度单位
+// ---------------------------------------------------------------------------
+
+TEST(DepthUnits, MovesAndLayersConvertBothWays) {
+  // 深度单位是本项目最容易出错的口径：引擎数"树层"，文档与公开基准数"玩家步"。
+  // 照着文档把"8 步"填成 depth 8 只会得到 4 步，而且**看不出错**。
+  EXPECT_EQ(LayersForMoves(0), 0);
+  EXPECT_EQ(LayersForMoves(1), 2);
+  EXPECT_EQ(LayersForMoves(4), 8);  // 公开基准说的 depth 8
+  EXPECT_EQ(LayersForMoves(8), 16);
+
+  EXPECT_EQ(MovesForLayers(0), 0);
+  EXPECT_EQ(MovesForLayers(2), 1);
+  EXPECT_EQ(MovesForLayers(8), 4);
+  EXPECT_EQ(MovesForLayers(16), 8);
+
+  for (int moves = 1; moves <= 12; ++moves) {
+    EXPECT_EQ(MovesForLayers(LayersForMoves(moves)), moves);
+  }
+  // 奇数层不是合法档位（max/chance 必须成对），向下取整而不是四舍五入。
+  EXPECT_EQ(MovesForLayers(7), 3);
+}
+
+TEST(DepthUnits, AlignToEvenLayersRoundsDown) {
+  EXPECT_EQ(AlignToEvenLayers(0), 0);
+  EXPECT_EQ(AlignToEvenLayers(1), 0);
+  EXPECT_EQ(AlignToEvenLayers(8), 8);
+  EXPECT_EQ(AlignToEvenLayers(9), 8);
+  EXPECT_EQ(AlignToEvenLayers(11), 10);
+  for (int layers = 2; layers <= 24; ++layers) {
+    EXPECT_EQ(AlignToEvenLayers(layers) % 2, 0);
+    EXPECT_LE(AlignToEvenLayers(layers), layers);
+  }
+}
+
+TEST(DepthUnits, AdaptiveDepthAlwaysReturnsAnEvenTarget) {
+  // 回归测试：搜索的迭代加深循环**只走偶数层**，所以奇数目标会被丢掉。
+  // 曾经所有自适应调整都是 ±1，于是 max_depth 从 8 提到 14 之后，
+  // 10 局对拍的结果逐局完全相同 —— 加成从未生效，而且没有任何报错。
+  SearchConfig config;  // 用默认值，改动默认值也要被这条覆盖
+  const std::array<std::uint64_t, 6> boards = {
+      0,
+      EncodeBoard({1, 1, 0, 0, 2, 2, 0, 0, 3, 3, 0, 0, 4, 4, 0, 0}),  // 空格 8、方向 2
+      EncodeBoard({1, 0, 0, 1, 1, 0, 0, 1, 2, 0, 0, 2, 3, 0, 0, 3}),  // 空格 8、方向 4
+      EncodeBoard({1, 2, 1, 2, 2, 1, 2, 1, 1, 2, 1, 2, 2, 1, 2, 0}),  // 空格 1
+      EncodeBoard({1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}),  // 空格 15
+      EncodeBoard({1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}),  // 空格 12、方向 1
+  };
+  for (const std::uint64_t board : boards) {
+    const int depth = AdaptiveDepth(board, config);
+    EXPECT_EQ(depth % 2, 0) << "自适应给出的目标深度 " << depth << " 是奇数 —— "
+                            << "迭代加深只走偶数层，这会静默丢掉整个加成";
+    EXPECT_GE(depth, config.min_depth);
+    EXPECT_LE(depth, config.max_depth);
+  }
+}
+
+TEST(DepthUnits, DefaultDepthIsFourPlayerMoves) {
+  const SearchConfig config;
+  EXPECT_EQ(MovesForLayers(config.base_depth), 4);
+  EXPECT_EQ(config.base_depth % 2, 0) << "基础深度必须是偶数（max 与 chance 交替）";
+}
+
+TEST(DepthUnits, DefaultMaxDepthAllowsAdaptiveBonus) {
+  // 上限如果等于基础深度，所有加成都会被 clamp 掉 —— 等于自适应只减不增。
+  const SearchConfig config;
+  EXPECT_GT(config.max_depth, config.base_depth)
+      << "max_depth 不大于 base_depth：自适应加成被完全夹掉";
+  // 每一项调整都必须是偶数，否则会被 AlignToEvenLayers 静默取整掉。
+  EXPECT_EQ(config.depth_penalty_when_many_empty % 2, 0);
+  EXPECT_EQ(config.depth_bonus_when_few_empty % 2, 0);
+  EXPECT_EQ(config.depth_bonus_when_few_mobility % 2, 0);
+}
+
+// ---------------------------------------------------------------------------
+// 自适应深度：必须对"机动性"有反应
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 盘面一律先用探针实测（见 tests 里对 CountMobility 的断言），不靠手推。
+// 这个项目已经因为手推盘面错过三次。
+//
+// 另一处反直觉的事实：**空盘的 CountMobility 是 0，不是 4。**
+// 盘上无子时 ApplyMove 判定为"没有变化"，所以方向数是 0。
+// 想构造"机动性高"的对照盘面不能用空盘，得用真的有子且四处能走的盘面。
+
+TEST(AdaptiveDepthPlan, FewMobilityAddsDepth) {
+  SearchConfig config;
+  config.base_depth = 8;
+  config.min_depth = 2;
+  config.max_depth = 14;
+  config.few_mobility_threshold = 2;
+  config.depth_bonus_when_few_mobility = 2;
+  // 关掉空格数那条线，单独看机动性。
+  config.many_empty_threshold = 99;
+  config.few_empty_threshold = 0;
+  config.depth_bonus_when_few_empty = 0;
+  config.depth_penalty_when_many_empty = 0;
+
+  // 对照：8 个空格、4 个方向都能走（实测）。
+  const std::uint64_t open = EncodeBoard({1, 0, 0, 1, 1, 0, 0, 1, 2, 0, 0, 2, 3, 0, 0, 3});
+  ASSERT_EQ(EmptyCount(open), 8);
+  ASSERT_EQ(CountMobility(open), 4) << "对照盘面没造对：期望 4 个方向";
+  EXPECT_EQ(AdaptiveDepth(open, config), 8) << "方向充足时不该加深";
+
+  // 目标形态：**同样 8 个空格，但只剩 2 个方向**（实测）。
+  // 这正是旧策略会误判的局面 —— 它只看空格数，会把"宽松"判给它。
+  const std::uint64_t stuck = EncodeBoard({1, 1, 0, 0, 2, 2, 0, 0, 3, 3, 0, 0, 4, 4, 0, 0});
+  ASSERT_EQ(EmptyCount(stuck), 8) << "两个盘面的空格数必须相同，否则对比没有意义";
+  ASSERT_EQ(CountMobility(stuck), 2) << "目标盘面没造对：期望 2 个方向";
+  EXPECT_GT(AdaptiveDepth(stuck, config), 8)
+      << "空格数与对照相同、方向只剩 2 个时没有加深 —— 自适应深度没有看机动性";
+}
+
+TEST(AdaptiveDepthPlan, EmptyCellsStillMatter) {
+  SearchConfig config;
+  config.base_depth = 8;
+  config.min_depth = 2;
+  config.max_depth = 14;
+  config.few_mobility_threshold = -1;  // 关掉机动性这条线
+  config.many_empty_threshold = 8;
+  config.depth_penalty_when_many_empty = 2;
+  config.few_empty_threshold = 4;
+  config.depth_bonus_when_few_empty = 2;
+
+  // 空盘 16 个空格 → 减两层（机动性这条线已关，不受 CountMobility=0 影响）。
+  EXPECT_EQ(AdaptiveDepth(0, config), 6);
+
+  // 只剩 1 个空格 → 加两层。构造一个几乎满的盘，且保证还有方向可走。
+  const std::uint64_t almost_full = EncodeBoard({1, 2, 1, 2, 2, 1, 2, 1, 1, 2, 1, 2, 2, 1, 2, 0});
+  ASSERT_EQ(EmptyCount(almost_full), 1);
+  EXPECT_EQ(AdaptiveDepth(almost_full, config), 10);
+}
+
+TEST(AdaptiveDepthPlan, ResultStaysWithinClamp) {
+  SearchConfig config;
+  config.base_depth = 8;
+  config.min_depth = 2;
+  config.max_depth = 8;  // 上限 == 基础深度：任何加成都不该突破它
+  config.many_empty_threshold = 99;
+  config.few_empty_threshold = 0;
+  config.depth_bonus_when_few_empty = 0;
+  config.depth_penalty_when_many_empty = 0;
+  config.few_mobility_threshold = 4;
+  config.depth_bonus_when_few_mobility = 4;  // 永远成立
+
+  // 用一个真的有子、且方向数 <= 4 的盘面（空盘的机动性是 0，也会触发加成）。
+  const std::uint64_t board = EncodeBoard({1, 1, 0, 0, 2, 2, 0, 0, 3, 3, 0, 0, 4, 4, 0, 0});
+  EXPECT_EQ(AdaptiveDepth(board, config), 8) << "max_depth 没有被尊重";
 }
 
 TEST(DifficultyWorldModel, DifficultyChangesTheAIMove) {

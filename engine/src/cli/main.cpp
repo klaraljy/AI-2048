@@ -50,6 +50,15 @@ struct Options {
   int every = 0;  // play 每多少步打印一次；0 = 只打印开头与结尾
   std::string tag;
   int depth = 6;
+  /**
+   * 自适应深度的**上限**。0 = 用 SearchConfig 的默认值。
+   *
+   * 需要这个开关，是因为默认的 max_depth 正好等于 base_depth，于是
+   * "方向少时加深"的加成会被完全夹掉 —— 等于自适应只减不增。
+   * 放开上限意味着**深搜那一步可能很贵**，所以它必须能被单独对拍，
+   * 而不是我凭"文档说该更深"就替用户决定。
+   */
+  int max_depth = 0;
   int time_budget_ms = 0;
   int chance_limit = 0;
   bool use_tt = true;
@@ -104,8 +113,32 @@ struct Options {
   /** 网络布局：rows / mixed（默认）/ six1 / six2 / six4 / serp。 */
   std::string net_layout = "mixed";
   ai2048::Weights weight_overrides;
-};
 
+  // --- compare 子命令：A/B 两套配置的**配对**对拍 ---------------------------
+  //
+  // 为什么要有这个命令：用两个独立跑批的**均值**比大小，在 100 局规模上
+  // 标准误约 1500 分（局标准差约 15000），3~4% 的差异只有 0.7~1.1σ，
+  // 根本分不出来 —— 这正是"长时间小提升"的陷阱。
+  //
+  // 配对就不一样：让 A、B 跑**同一批种子**，同一局里生成序列完全相同，
+  // 只有 AI 决策不同，于是局间方差被消掉，剩下的是"同一局里 B 比 A 多拿多少"。
+  // 逐局差值的标准误通常只有独立比较的几分之一，百局量级就能看出 5% 的差异。
+  // --- compare 子命令：A/B 两套配置的**配对**对拍 ---------------------------
+  //
+  // 为什么要有这个子命令：用两个独立跑批的**均值**比大小，在 100 局规模上
+  // 标准误约 1500 分（局标准差约 15000），3~4% 的差异只有 0.7~1.1σ，
+  // 根本分不出来 —— 这正是"长时间小提升"的陷阱。
+  //
+  // 配对就不一样：让 A、B 跑**同一批种子**，同一局里生成序列完全相同，
+  // 只有 AI 决策不同，于是局间方差被消掉，剩下的是"同一局里 B 比 A 多拿多少"。
+  // 逐局差值的标准误通常只有独立比较的几分之一。
+  /** B 组的基础深度（树层数）。0 = 与 A 组相同。 */
+  int depth_b = 0;
+  /** B 组的时间预算；-1 = 与 A 组相同（0 是合法值，代表不限时）。 */
+  int time_budget_b = -1;
+  bool has_weight_b = false;
+  ai2048::Weights weight_overrides_b;
+};
 // 解析 "key=value,key=value,..."。键用短名，便于命令行书写。
 [[nodiscard]] bool ParseWeightOverrides(const std::string& spec, ai2048::Weights* weights);
 
@@ -157,6 +190,8 @@ struct Options {
       if (!take_int(&options->every)) return false;
     } else if (arg == "--depth") {
       if (!take_int(&options->depth)) return false;
+    } else if (arg == "--max-depth") {
+      if (!take_int(&options->max_depth)) return false;
     } else if (arg == "--time") {
       if (!take_int(&options->time_budget_ms)) return false;
     } else if (arg == "--chance-limit") {
@@ -234,6 +269,18 @@ struct Options {
       }
     } else if (arg == "--tag") {
       if (!take(&options->tag)) return false;
+    } else if (arg == "--depth-b") {
+      if (!take_int(&options->depth_b)) return false;
+    } else if (arg == "--time-b") {
+      if (!take_int(&options->time_budget_b)) return false;
+    } else if (arg == "--weights-b") {
+      std::string spec;
+      if (!take(&spec)) return false;
+      if (!ParseWeightOverrides(spec, &options->weight_overrides_b)) {
+        std::cerr << "无法解析 --weights-b: " << spec << "\n";
+        return false;
+      }
+      options->has_weight_b = true;
     } else {
       std::cerr << "未知选项: " << arg << "\n";
       return false;
@@ -293,6 +340,12 @@ struct Options {
       weights->gradient = value;
     } else if (key == "bias") {
       weights->anchor_bias = value;
+    } else if (key == "mob") {
+      // 可移动方向数（平方后乘此权重）。默认 0，见 evaluate.h。
+      weights->mobility = value;
+    } else if (key == "island") {
+      // 孤立块惩罚。默认 0，且**应为负值**。
+      weights->islands = value;
     } else {
       std::cerr << "未知权重键: " << key << "\n";
       return false;
@@ -304,6 +357,11 @@ struct Options {
 [[nodiscard]] SearchConfig MakeSearchConfig(const Options& options) {
   SearchConfig config;
   config.base_depth = options.depth;
+  if (options.max_depth > 0) {
+    config.max_depth = options.max_depth;
+    // 上限不能低于基础深度，否则 clamp 会把基础深度也一起压下去。
+    config.max_depth = std::max(config.max_depth, config.base_depth);
+  }
   config.time_budget_ms = options.time_budget_ms;
   config.chance_sample_limit = options.chance_limit;
   config.weights = options.weight_overrides;
@@ -779,6 +837,166 @@ int RunBench(const Options& options) {
 }
 
 // ---------------------------------------------------------------------------
+// compare：A/B 两套配置的**配对**对拍
+// ---------------------------------------------------------------------------
+//
+// 存在理由：用两次独立跑批的**均值**比较，100 局的标准误约 1500 分
+// （局标准差约 15000），3~4% 的差异只有 0.7~1.1σ，测不出来。
+// 配对比较让两套配置跑**同一批种子**，同一局里生成序列完全相同，
+// 只有 AI 的决策不同，于是局间方差被消掉，只留下"同一局里 B 比 A 多拿多少"。
+//
+// 必须同时看两个量：
+//   - 平均差值：效应有多大
+//   - 差值的标准误：这个效应有多可信（|mean|/SE 就是配对 t 统计量）
+// 只看前者就是"长时间小提升"的陷阱。
+// 另外必须跑一次 **A 对 A 的空转**（--weights-b 与 --weights 相同）：
+// 空转若报出显著差异，说明工具本身有问题，后面的结论一律不可信。
+int RunCompare(const Options& options) {
+  std::string error;
+  auto seeds = ReadSeeds(options.seeds_path, &error);
+  if (!seeds.has_value()) {
+    std::cerr << error << "\n";
+    return 1;
+  }
+  if (options.limit > 0 && static_cast<std::size_t>(options.limit) < seeds->size()) {
+    seeds->resize(static_cast<std::size_t>(options.limit));
+  }
+  if (seeds->empty()) {
+    std::cerr << "种子集为空\n";
+    return 1;
+  }
+
+  // A 组 = 常规选项；B 组 = 在此基础上只改被显式指定的那一项。
+  SearchConfig config_a = MakeSearchConfig(options);
+  SearchConfig config_b = config_a;
+  if (options.depth_b > 0) config_b.base_depth = options.depth_b;
+  if (options.time_budget_b >= 0) config_b.time_budget_ms = options.time_budget_b;
+  if (options.has_weight_b) config_b.weights = options.weight_overrides_b;
+
+  std::string net_error;
+  auto loaded = ai2048::learn::LoadNetworkFromFile(options.net_file, &net_error);
+  if (!loaded.has_value()) {
+    std::cerr << "加载权重失败：" << net_error << "\n";
+    return 1;
+  }
+  const std::shared_ptr<ai2048::learn::ValueNetwork> network = *loaded;
+  ai2048::learn::AttachNetwork(network, &config_a);
+  ai2048::learn::AttachNetwork(network, &config_b);
+
+  const std::size_t table_capacity = MakeTableCapacity(options);
+  const bool symmetry_keys = MakeUseSymmetryKeys(options);
+  const auto started = std::chrono::steady_clock::now();
+
+  std::size_t a_wins = 0;
+  std::size_t b_wins = 0;
+  std::size_t ties = 0;
+  std::size_t a_2048 = 0;
+  std::size_t b_2048 = 0;
+  double sum_delta = 0.0;     // Σ(B - A)
+  double sum_delta_sq = 0.0;  // Σ(B - A)²
+  double a_total = 0.0;
+  double b_total = 0.0;
+
+  for (std::size_t i = 0; i < seeds->size(); ++i) {
+    const std::uint64_t seed = (*seeds)[i];
+    const PlayOutcome a =
+        PlayOneGame(seed, config_a, table_capacity, symmetry_keys, options.difficulty);
+    const PlayOutcome b =
+        PlayOneGame(seed, config_b, table_capacity, symmetry_keys, options.difficulty);
+    const double delta = static_cast<double>(b.score) - static_cast<double>(a.score);
+    sum_delta += delta;
+    sum_delta_sq += delta * delta;
+    a_total += static_cast<double>(a.score);
+    b_total += static_cast<double>(b.score);
+    if (delta > 0.0) {
+      ++b_wins;
+    } else if (delta < 0.0) {
+      ++a_wins;
+    } else {
+      ++ties;
+    }
+    if (a.max_exponent >= 11) ++a_2048;
+    if (b.max_exponent >= 11) ++b_2048;
+
+    const std::size_t done = i + 1;
+    if (done % 10 == 0 || done == seeds->size()) {
+      std::cout << "\r  配对进度 " << done << "/" << seeds->size() << std::flush;
+    }
+  }
+
+  const double wall_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+  std::cout << "\n";
+
+  const double games = static_cast<double>(seeds->size());
+  const double mean_delta = sum_delta / games;
+  const double mean_a = a_total / games;
+  const double mean_b = b_total / games;
+  // 样本方差（无偏）。差值为常数时方差为 0，SE 也为 0 —— 这时任何非零差值
+  // 都"无限显著"，但那是退化情形，下面单独处理，避免除以 0。
+  const double variance =
+      games > 1.0 ? (sum_delta_sq - games * mean_delta * mean_delta) / (games - 1.0) : 0.0;
+  const double std_err = std::sqrt(std::max(0.0, variance) / games);
+  const double t_stat = std_err > 0.0 ? mean_delta / std_err : 0.0;
+
+  // 符号检验（只看胜负，不看幅度）。大样本下用正态近似。
+  // 忽略平局：平局不提供方向信息。
+  const double decisive = static_cast<double>(a_wins + b_wins);
+  double sign_p = 1.0;
+  if (decisive > 0.0) {
+    const double z =
+        std::abs(static_cast<double>(b_wins) - decisive / 2.0) / std::sqrt(decisive * 0.25);
+    sign_p = std::erfc(z / std::sqrt(2.0));
+  }
+
+  // 要在同一显著水平下分辨出 5% 的效应，还需要多少局？
+  // n ≈ 16 × (σ_delta / μ_A)² 是"5% 效应、α=0.05、power=0.8"的两样本估计。
+  const double rel_se = mean_a > 0.0 ? std_err / mean_a : 0.0;
+  const double need_for_5pct = rel_se > 0.0 ? 16.0 / (rel_se * rel_se) : 0.0;
+
+  std::cout << "规则集版本 : " << ai2048::RulesetVersion() << "\n";
+  std::cout << "难度       : " << ai2048::DifficultyName(options.difficulty) << "\n";
+  std::cout << "种子集     : " << options.seeds_path << "（前 " << seeds->size() << " 局）\n";
+  std::cout << "A 组       : 深度 " << config_a.base_depth;
+  if (config_a.time_budget_ms > 0) std::cout << "，预算 " << config_a.time_budget_ms << "ms";
+  std::cout << "\n";
+  std::cout << "B 组       : 深度 " << config_b.base_depth;
+  if (config_b.time_budget_ms > 0) std::cout << "，预算 " << config_b.time_budget_ms << "ms";
+  std::cout << "\n\n";
+  std::cout << "A 平均分   : " << static_cast<std::uint64_t>(std::llround(mean_a)) << "\n";
+  std::cout << "B 平均分   : " << static_cast<std::uint64_t>(std::llround(mean_b)) << "\n";
+  std::cout << "平均差值   : " << (mean_delta >= 0 ? "+" : "")
+            << static_cast<std::int64_t>(std::llround(mean_delta)) << "  (B - A)\n";
+  std::cout << "相对变化   : " << (mean_a > 0.0 ? 100.0 * mean_delta / mean_a : 0.0) << " %\n";
+  std::cout << "差值标准差 : " << std::sqrt(std::max(0.0, variance)) << "\n";
+  std::cout << "差值标准误 : " << std_err << "\n";
+  std::cout << "配对 t     : " << t_stat << "   （|t| > 2 约等于 95% 置信）\n";
+  std::cout << "胜负局     : B 胜 " << b_wins << " / A 胜 " << a_wins << " / 平 " << ties
+            << "，符号检验 p = " << sign_p << "\n";
+  std::cout << "2048 到达  : A " << a_2048 << "/" << seeds->size() << "，B " << b_2048 << "/"
+            << seeds->size() << "\n";
+
+  std::cout << "\n结论       : ";
+  if (variance == 0.0 && mean_delta == 0.0) {
+    std::cout << "两组**逐局完全相同** —— 这次改动没有影响决策（可用作管线自检）。\n";
+  } else if (std::abs(t_stat) < 2.0) {
+    std::cout << "**分辨不出差异**（|t| < 2）。不能说 B 更好，也不能说更差。\n";
+    if (need_for_5pct > games) {
+      std::cout << "           当前精度只能分辨约 " << (100.0 * 2.0 * std_err / mean_a)
+                << "% 以上的差异；要分辨 5% 需要约 "
+                << static_cast<std::uint64_t>(std::ceil(need_for_5pct)) << " 局。\n";
+    }
+  } else if (t_stat > 0.0) {
+    std::cout << "B 显著更好（t = " << t_stat << "）。\n";
+  } else {
+    std::cout << "A 显著更好（t = " << t_stat << "）。\n";
+  }
+  std::cout << "总耗时     : " << wall_seconds << " s（单线程，A+B 各 " << seeds->size()
+            << " 局）\n";
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // play：单局演示
 // ---------------------------------------------------------------------------
 
@@ -1123,6 +1341,9 @@ void PrintUsage() {
       << ")\n"
       << "通用选项:\n"
       << "  --depth N         基础搜索深度，默认 6（偶数更自然）\n"
+      << "                    单位是**树层数**：1 步前瞻 = 2 层。公开基准说的 depth 8\n"
+      << "                    是 8 步 = 本项目的 16 层，别把两者的数字直接比。\n"
+      << "  --max-depth N     自适应深度的上限（默认 = 基础深度，即加成被夹掉）\n"
       << "  --time N          每步时间预算（毫秒）。0 = 不限时（完全确定，可复现）\n"
       << "  --chance-limit N  chance 节点采样上限。0 = 枚举全部空格\n"
       << "  --net-file F      用训练好的 n-tuple 权重做叶子评估（替代手写启发式）\n"
@@ -1136,6 +1357,11 @@ void PrintUsage() {
       << "  trace     --seeds <文件> [--limit N]          每局输出一行状态，供前端规则对拍\n"
       << "  selfcheck --seeds <文件>                      同种子重跑两次，校验逐字节一致\n"
       << "  bench     --seeds <文件> [--limit N] [--threads N] [--tag T]\n"
+      << "  compare   --seeds <文件> [--limit N] [--weights-b S] [--depth-b N] [--time-b N]\n"
+      << "            配对对拍：A/B 跑同一批种子，输出逐局差值的均值与标准误。\n"
+      << "            用均值比较分不出 3~4% 的差异（100 局 SE≈1500 分），配对可以。\n"
+      << "            先跑一次 A 对 A（--weights-b 与 --weights 相同）做空转自检：\n"
+      << "            空转若报显著，工具本身有问题，后续结论一律不可信。\n"
       << "  train     [--net L] [--games N] [--lr F] [--nstep N] [--discount F]\n"
       << "            [--eval-every N] [--eval-games N] [--threads N] [--batch N] [--out 文件]\n"
       << "            TD 学习训练 n-tuple 价值网络。L 取 rows/mixed/six1/six2/six4\n"
@@ -1176,6 +1402,7 @@ int main(int argc, char** argv) {
   if (command == "json") return RunJsonCheck();
   if (command == "selfcheck") return RunSelfCheck(options);
   if (command == "bench") return RunBench(options);
+  if (command == "compare") return RunCompare(options);
   if (command == "train") return RunTrain(options);
 
   std::cerr << "未知子命令: " << command << "\n\n";

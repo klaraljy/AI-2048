@@ -238,7 +238,64 @@ struct RawTerms {
   int max_col = 0;
   float edge_support = 0.0F;
   float gradient = 0.0F;
+  int mobility = 0;
+  int islands = 0;
 };
+
+/**
+ * 还有几个方向能走（0~4）。**内部实现**，对外入口是文件末尾的 `CountMobility`。
+ *
+ * 这是**最直接的死局预警**：其它项都只看静态形状（空位多少、单不单调、
+ * 落差大不大），唯独看不到"下一步还走不走得动"。空位多但方向被堵死的局面
+ * 是存在的 —— 静态项会给它高分。
+ */
+[[nodiscard]] int CountMobilityImpl(std::uint64_t board) noexcept {
+  int count = 0;
+  for (const Direction direction :
+       {Direction::kUp, Direction::kDown, Direction::kLeft, Direction::kRight}) {
+    if (ApplyMove(board, direction).moved) ++count;
+  }
+  return count;
+}
+
+/**
+ * 孤立块数量：与任何上下左右邻居**既不相等、也不差一倍**的牌。
+ *
+ * 这种牌参与不了任何合并链 —— 旁边没有能立刻合成它的牌，也没有它能吃掉的牌，
+ * 只能等更大的牌过来救。是纯粹的"占着格子不干活"。
+ *
+ * 与平滑度的区别：平滑度把整盘所有相邻对的落差加总，一张孤立的小牌会被
+ * 大量正常相邻对稀释；这一项只数真正卡住的那几张，所以更尖锐。
+ */
+[[nodiscard]] int CountIslands(std::uint64_t board) noexcept {
+  constexpr std::array<std::array<int, 2>, 4> kOffsets = {{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
+  int islands = 0;
+
+  for (int index = 0; index < kCellCount; ++index) {
+    const int exponent = GetExponent(board, index);
+    if (exponent == 0) continue;  // 空格不算孤立块
+
+    const int row = index / kBoardSize;
+    const int col = index % kBoardSize;
+    bool has_related = false;
+
+    for (const auto& offset : kOffsets) {
+      const int r = row + offset[0];
+      const int c = col + offset[1];
+      if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
+      const int neighbour = GetExponent(board, r * kBoardSize + c);
+      if (neighbour == 0) continue;
+      // 相等 → 能直接合并；差 1 → 有一方能吃掉另一方
+      if (neighbour == exponent || neighbour == exponent - 1 || neighbour == exponent + 1) {
+        has_related = true;
+        break;
+      }
+    }
+
+    if (!has_related) ++islands;
+  }
+  return islands;
+}
 
 /**
  * 位置排名蛇形分：沿蛇形路径的**指数衰减**位置权重。
@@ -371,6 +428,21 @@ struct RawTerms {
   out.merge = terms.merge * weights.merge;
   out.snake = terms.snake * weights.snake;
   out.snake_rank = terms.snake_rank * weights.snake_rank;
+
+  // 按《AI算法设计2》补的两项。原始项在 ComputeRawTerms 里按权重门控计算
+  // （CountMobility 要试走 4 个方向，是这里最贵的），这里只乘权重。
+  out.mobility_directions = terms.mobility;
+  out.island_tiles = terms.islands;
+  // 可移动性用**平方**：4→3 个方向无所谓，2→1 才是真的危险。
+  out.mobility = static_cast<float>(terms.mobility * terms.mobility) * weights.mobility;
+  // 孤立块是惩罚项 —— 权重应为负，符号交给权重本身。
+  out.islands = static_cast<float>(terms.islands) * weights.islands;
+  out.mobility_directions = terms.mobility;
+  out.island_tiles = terms.islands;
+  // 可移动性用**平方**：4→3 个方向无所谓，2→1 才是真的危险。
+  out.mobility = static_cast<float>(terms.mobility * terms.mobility) * weights.mobility;
+  // 孤立块是惩罚项，权重应为负（与文档一致）；这里只做乘法，符号交给权重。
+  out.islands = static_cast<float>(terms.islands) * weights.islands;
   out.max_tile = static_cast<float>(terms.max_exponent) * weights.max_tile;
 
   // 最大牌在角上才给奖励，并按空格数缩放 —— 没有腾挪空间时，
@@ -409,18 +481,38 @@ struct RawTerms {
   out.gradient = terms.gradient * weights.gradient;
 
   out.total = out.empty + out.monotonicity + out.smoothness + out.merge + out.corner + out.snake +
-              out.snake_rank + out.max_tile + out.corner_control + out.edge_support + out.gradient;
+              out.snake_rank + out.max_tile + out.corner_control + out.edge_support + out.gradient +
+              out.mobility + out.islands;
   return out;
 }
 
 }  // namespace
 
+int CountMobility(std::uint64_t board) noexcept { return CountMobilityImpl(board); }
+
+/**
+ * 原始项 + 两个**按权重门控**的补充项。
+ *
+ * 为什么门控：`CountMobility` 要试走 4 个方向，是整条评估链里最贵的计算；
+ * 而叶子评估是搜索里调用次数最多的函数。这两项默认权重是 0，
+ * 不判一下就等于每次叶子都白花这份算力。
+ *
+ * 门控放在这里而不是 ComputeTerms 里，是因为 ComputeTerms 只看盘面、
+ * 拿不到权重 —— 而"要不要算"必须由权重决定。
+ */
+[[nodiscard]] RawTerms ComputeTermsGated(std::uint64_t board, const Weights& weights) noexcept {
+  RawTerms terms = ComputeTerms(board);
+  if (weights.mobility != 0.0F) terms.mobility = CountMobilityImpl(board);
+  if (weights.islands != 0.0F) terms.islands = CountIslands(board);
+  return terms;
+}
+
 float Evaluate(std::uint64_t board, const Weights& weights) noexcept {
-  return ToBreakdown(ComputeTerms(board), weights).total;
+  return ToBreakdown(ComputeTermsGated(board, weights), weights).total;
 }
 
 EvaluationBreakdown EvaluateWithBreakdown(std::uint64_t board, const Weights& weights) noexcept {
-  return ToBreakdown(ComputeTerms(board), weights);
+  return ToBreakdown(ComputeTermsGated(board, weights), weights);
 }
 
 }  // namespace ai2048

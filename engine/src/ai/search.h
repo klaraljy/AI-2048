@@ -60,34 +60,89 @@ class TranspositionTable {
   Impl* impl_;
 };
 
+// ---------------------------------------------------------------------------
+// ⚠️ 深度单位换算：**本引擎的 depth 是"树层数"，不是"玩家步数"**
+//
+// 这是全项目最容易出错的一处口径，必须用函数而不是脑算：
+//
+//     max 节点（玩家走一步）→ chance 节点（生成一个随机块）→ max 节点 → …
+//
+// 所以「走 n 步前瞻」= `LayersForMoves(n)` = 2n 层。
+//
+// | 树层数 | 玩家步数 | 说明 |
+// |---|---|---|
+// | 2  | 1 | 只看一步 |
+// | 8  | 4 | 本项目长期基线用的档位 |
+// | 16 | 8 | 公开基准（macroxue / nneonneo）说的 "depth 8" 是这个 |
+//
+// 为什么专门写函数：《AI算法设计2》第七节给的深度表用的是**玩家步数**
+// （空位 10+ 建议 4、空位 1~3 建议 7~8）。照着字面把 "8" 填进来会得到
+// 8 层 = 4 步 —— 只有文档建议的一半，而且**表面上完全看不出错**。
+// ---------------------------------------------------------------------------
+
+/** 玩家步数 → 树层数（每步 = max + chance 两层）。 */
+[[nodiscard]] constexpr int LayersForMoves(int moves) noexcept {
+  return moves <= 0 ? 0 : moves * 2;
+}
+
+/** 树层数 → 玩家步数（向下取整）。 */
+[[nodiscard]] constexpr int MovesForLayers(int layers) noexcept {
+  return layers <= 0 ? 0 : layers / 2;
+}
+
+/**
+ * 把任意深度对齐到**合法档位**（偶数层）。
+ *
+ * 搜索只在偶数层上成对展开（max → chance），奇数层会停在 max 节点上，
+ * 那一层只能判断合法性、拿不到任何局面信息 —— 白花时间。迭代加深的循环
+ * 也因此只走偶数：`for (depth = 2; depth <= target; depth += 2)`。
+ *
+ * ⚠️ 由此产生一个**隐蔽的失效模式**：任何奇数层数的目标都会被向下取整，
+ * 于是"空格少 +1"这类调整会被**静默吞掉**。实测过一次：把 max_depth 从 8
+ * 提到 14 之后，10 局对拍的结果**逐局完全相同** —— 因为自适应算出 9 或 11，
+ * 循环只跑到 8，加成从未生效。自适应深度的**每一项调整都应该是偶数**，
+ * 否则改了等于没改。
+ */
+[[nodiscard]] constexpr int AlignToEvenLayers(int layers) noexcept {
+  return layers <= 0 ? 0 : layers - (layers % 2);
+}
+
 struct SearchConfig {
-  // 基础搜索深度。**偶数**：max 与 chance 逐层交替。
+  // 基础搜索深度，单位是**树层数**（换算见上）。**偶数**：max 与 chance 逐层交替。
   //
-  // ⚠️ **深度计法与公开基准不同，比较时务必换算。**
-  //
-  // 这里 depth 数的是**树层数**，每两层才等于"一步前瞻"：
-  //     depth 2 = 1 步（玩家走一步 + 生成一个随机块）
-  //     depth 8 = 4 步
-  //     depth 16 = 8 步
-  // 而公开基准（macroxue / nneonneo）报的 "depth 8" 指的是 **8 步前瞻**，
-  // 换算过来相当于这里的 depth 16。
-  //
-  // 实测对照（100 局，本项目，见 docs/results/）：
+  // 实测对照（100 局，旧生成规则，见 docs/results/）：
   //     depth 4（2 步）  平均 17,644    到 2048 占 28%
   //     depth 6（3 步）  平均 30,715    到 2048 占 63%
   //     depth 8（4 步）  平均 39,455    到 2048 占 80%
-  // 参照 macroxue depth 8（8 步）平均 711,769 —— 差了将近 20 倍。
+  // 参照 macroxue depth 8（8 步 = 本引擎 depth 16）平均 711,769 —— 差了将近 20 倍。
   // 这个差距主要来自**前瞻步数**，不是启发式写法。
   int base_depth = 8;
 
-  // 自适应深度：空格多时盘面宽松，可减一层省钱；
-  // 空格少时每一步都关键，加一层。
-  int depth_penalty_when_many_empty = 1;  // 空格 >= 阈值时 -1
+  // 自适应深度。原先只看**空格数**，现在改成看**可移动方向数** —— 见
+  // AdaptiveDepth 的说明：空位多但方向被堵死的局面是存在的。
+  //
+  // ⚠️ **每一项调整都必须是偶数。** 搜索只在偶数层成对展开，见
+  // AlignToEvenLayers 的说明 —— 这里踩过一次：所有调整都是 ±1，
+  // 结果 max_depth 从 8 提到 14 之后对拍结果逐局完全相同，加成从未生效。
+  int depth_penalty_when_many_empty = 2;  // 空格 >= 阈值时 -2
   int many_empty_threshold = 8;
-  int depth_bonus_when_few_empty = 1;  // 空格 <= 阈值时 +1
+  int depth_bonus_when_few_empty = 2;  // 空格 <= 阈值时 +2
   int few_empty_threshold = 4;
+  /** 可移动方向数 <= 此值时加成（危险局面，值得多搜）。 */
+  int few_mobility_threshold = 2;
+  int depth_bonus_when_few_mobility = 2;
   int min_depth = 2;
-  int max_depth = 8;
+  // 自适应深度的上限。
+  //
+  // ⚠️ **必须大于 base_depth，否则加成会被完全夹掉。**
+  // 这里踩过一次：上限原先是 8、基础深度也是 8，"方向少时 +2" 永远等于 8，
+  // 等于自适应只减不增 —— 而且不报错，只是那一档功能从未生效过。
+  //
+  // 放开到 14（7 步）会让危险局面**真的**搜到 10~12 层，代价是那一步明显变慢。
+  // 所以它必须配合时间预算使用：迭代加深只在**整轮跑完**时才采用结果，
+  // 超时就退回上一轮，慢的那一步不会变成不可接受的延迟。
+  // 对拍用的固定深度模式（--time 0）不受影响。
+  int max_depth = 14;
 
   // 概率剪枝：累计概率低于此值的分支直接丢弃。
   bool enable_probability_cutoff = true;
@@ -192,6 +247,27 @@ struct SearchResult {
  */
 [[nodiscard]] std::array<double, kCellCount> SpawnWeights(std::uint64_t board,
                                                           Difficulty difficulty);
+
+/**
+ * chance 节点上生成 4 的概率（其余为 2）。必须与实际生成规则一致。
+ *
+ * ⚠️ **这个方法存在的唯一理由是防止它再次写死。** 位置权重（SpawnWeights）
+ * 早就按难度接上了，数值概率却漏了 —— 在 2026-09 把 P(4) 改成按难度分档
+ * （10/15/20%）之后，搜索里仍写着 0.9 / 0.1 用了很久，没有任何报错：
+ *
+ * | 难度 | 实际 P(4) | 曾经写死 | 偏差 |
+ * |---|---|---|---|
+ * | easy   | 10% | 10% | 无 |
+ * | normal | 15% | 10% | 低估 4 |
+ * | hard   | 20% | 10% | 低估 4 一倍 |
+ *
+ * 后果不是"略弱"，而是**系统性偏乐观**：4 比 2 难缠（要多合一次才等价），
+ * 低估 4 等于告诉 AI"冒险划算"，于是它更容易把自己堵死。
+ *
+ * 暴露出来是为了**可测试**：tests/difficulty_test.cpp 会拿它和
+ * Game 实际生成的 4 占比对拍。两边是同一套规则的两个副本，写错了不报错。
+ */
+[[nodiscard]] double FourSpawnProbability(Difficulty difficulty) noexcept;
 
 // 选择最佳方向。
 //

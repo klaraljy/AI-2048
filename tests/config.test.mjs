@@ -129,10 +129,25 @@ async function main() {
     });
 
     const info = response.payload.debugInfo;
+    // ⚠️ **不能断言 searchDepth === spec.depth。**
+    //
+    // 那曾经是对的，但只是因为**自适应深度的加成当时完全没生效**：
+    // 迭代加深的循环只在偶数层步进，而所有调整都是 ±1，奇数目标被静默丢掉。
+    // 修掉之后三档分别搜到 6 / 8 / 10 层 —— 测试立刻变红，而那时引擎是对的。
+    //
+    // 现在断言的是**真正要保证的性质**：承诺深度是**下限**（引擎至少搜那么深），
+    // 实际深度是偶数，且不会离谱地超过承诺值。
+    const lowerBound = spec.depth;
+    const upperBound = spec.depth + 6; // 自适应最多加三层（空格 + 机动性）
     check(
-      `${spec.label}：引擎实际搜到 ${stepsAhead(spec.depth)} 步（承诺值）`,
-      info.searchDepth === spec.depth,
-      `期望 depth=${spec.depth}，实际 ${info.searchDepth}`
+      `${spec.label}：引擎实际搜到不少于承诺的 ${stepsAhead(spec.depth)} 步（自适应只会更深）`,
+      info.searchDepth >= lowerBound && info.searchDepth <= upperBound,
+      `承诺 depth=${spec.depth}，实际 ${info.searchDepth}`
+    );
+    check(
+      `${spec.label}：实际深度是偶数层（奇数层拿不到局面信息）`,
+      info.searchDepth % 2 === 0,
+      `实际 ${info.searchDepth}`
     );
     check(
       `${spec.label}：debugInfo.baseDepth 回显为 ${spec.depth}`,
