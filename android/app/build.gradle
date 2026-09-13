@@ -70,6 +70,12 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    // AGP 8 起 BuildConfig 默认不生成，而 MainActivity 要用 BuildConfig.DEBUG
+    // 来决定是否打开 WebView 远程调试。不开这一行会报 "cannot find symbol BuildConfig"。
+    buildFeatures {
+        buildConfig true
+    }
 }
 
 // ---------------------------------------------------------------------------

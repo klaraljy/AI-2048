@@ -169,6 +169,15 @@ let maxCelebrated = 0;
 let celebrated2048 = false;
 let transport = null;
 let transportDegraded = true;
+/**
+ * 当前 AI 走的是哪条通道：'native'（APK 里的 C++ 引擎）/ 'websocket'（桌面引擎）/
+ * 'local'（内置 JS 降级 AI）。
+ *
+ * 存在的理由：手机端"AI 没接上"的表现只是**按了没反应**，页面不报错 ——
+ * 完全分不清是引擎没连上、还是引擎回了"无步可走"。有了这个值，
+ * 按钮的长按提示里就能写清当前用的是哪条通道。见 updateAiChannelHint。
+ */
+let transportSource = 'local';
 let autoRunning = false;
 let autoTimer = null;
 let lastMove = null;
@@ -207,8 +216,15 @@ async function applyStrength() {
 
 const input = new Input({
   onMove: (direction) => void performMove(direction),
-  // 查询式上锁：动画进行中或 AI 自动播放时丢弃玩家输入。
-  isLocked: () => renderer.busy() || autoRunning || game === null || game.gameOver,
+  /**
+   * 查询式上锁：只锁"确实不能走子"的情况。
+   *
+   * ⚠️ **不要再把 `renderer.busy()` 放进来。** 那会让动画期间（约 250~400ms）
+   * 的滑动被直接丢弃，快速连滑时有相当比例的动作被吃掉 ——
+   * 用户的手感就是"反应慢慢的、卡卡的"。
+   * 动画现在是可以被打断的：`performMove` 会先 `renderer.finishNow()` 收尾上一次动画。
+   */
+  isLocked: () => autoRunning || game === null || game.gameOver,
   // 规则弹窗开着时：手指仍可拖动（能看规则），但不该走子。
   // ⚠️ 判定用 `.show` 类（modal 的显隐方式），不是 `.hidden`。
   isSwipeBlocked: () => el.rulesModal.classList.contains('show'),
@@ -263,7 +279,13 @@ function refreshControls() {
 // ------------------------------------------------------------------ 走子
 
 async function performMove(direction) {
-  if (renderer.busy()) return false;
+  // ⚠️ 这里原来写的是 `if (renderer.busy()) return false;` —— 动画期间（约 250~400ms）
+  // 玩家的滑动被**直接丢弃**。快速连滑时有相当比例的动作被吃掉，手感就是"没反应、
+  // 卡卡的"（用户 2026-09-13 反馈）。
+  //
+  // 现在改成**打断上一次动画**再走这一步：游戏逻辑本来就已同步落定，
+  // 打断只影响观感，不会让状态错位。
+  if (renderer.busy()) renderer.finishNow();
   if (!game || game.gameOver) return false;
 
   const before = game.board.map((row) => row.slice());
@@ -520,9 +542,25 @@ async function aiStep() {
   if (renderer.busy() || !game || game.gameOver) return;
   if (!transport) return;
 
-  const decision = await transport.bestMove(board_values(game.board), { lastMove });
-  if (!decision.move) {
-    // 没有合法步意味着已经结束；不当作错误
+  let decision;
+  try {
+    decision = await transport.bestMove(board_values(game.board), { lastMove });
+  } catch (error) {
+    // 通道本身出错（JNI 异常、WebSocket 断了）。以前这里没有 catch，
+    // 异常会被 aiStep 的调用方吞掉 —— 表现为"按了没反应"，什么提示都没有。
+    showNotice(`AI 通道出错：${error && error.message ? error.message : String(error)}`);
+    stopAuto();
+    return;
+  }
+
+  if (!decision || !decision.move) {
+    // 引擎说"无合法走子"= 局面已经结束，不是错误。
+    // ⚠️ 但**通道不可用**也走这条分支（原生桥返回 null、请求超时），
+    // 两者必须分开报，否则用户看到的就是"按了没反应"而不知道是哪种。
+    if (!game.gameOver) {
+      showNotice(`AI 没有给出走子（当前通道：${aiChannelName()}）。可能引擎未接上或响应超时。`);
+      stopAuto();
+    }
     return;
   }
   await performMove(decision.move);
@@ -640,6 +678,25 @@ function showNotice(text) {
   el.notice.classList.remove('hidden');
 }
 
+/** 通道名，给提示文字用。 */
+function aiChannelName() {
+  if (transportSource === 'native') return '手机内置引擎（C++）';
+  if (transportSource === 'websocket') return '桌面引擎';
+  return '降级 AI（简化版）';
+}
+
+/**
+ * 把"当前用的哪个 AI"写进按钮的 title（长按可见）。
+ *
+ * ⚠️ 只改 `title`，**不要写 textContent** —— 那两个按钮里都有内联 SVG，
+ * 写 textContent 会把图标整个删掉（`#ai-auto` 的图标就这么丢过一次）。
+ */
+function updateAiChannelHint() {
+  const channel = aiChannelName();
+  if (el.aiStep) el.aiStep.title = `AI 走一步（空格）· 引擎：${channel}`;
+  if (el.aiAuto) el.aiAuto.title = `AI 自动演示 · 引擎：${channel}`;
+}
+
 // ------------------------------------------------------------------ 启动
 
 async function boot() {
@@ -654,6 +711,7 @@ async function boot() {
   const result = await createTransport({ engineUrl: ENGINE_URL, requestTimeoutMs: requestTimeout });
   transport = result.transport;
   transportDegraded = result.degraded;
+  transportSource = result.source || (transportDegraded ? 'local' : 'websocket');
 
   if (transportDegraded) {
     // 不白屏、不假装：明确告诉用户当前 AI 是降级的
@@ -661,6 +719,11 @@ async function boot() {
   } else {
     el.notice.classList.add('hidden');
   }
+
+  // AI 通道写进按钮的提示文字里。
+  // 为什么值得做：手机端"AI 没接上"的表现是**按了没反应**，而页面一片安静 ——
+  // 完全看不出是引擎没连上、还是引擎说"无步可走"。长按按钮能看到用的是哪条通道。
+  updateAiChannelHint();
 
   // 连上之后立刻把当前强度告诉引擎。不告诉的话引擎会用它启动时的默认值，
   // 界面上写着"入门·看 2 步"而实际跑的是深度 8 —— 参数与实际不符比没有参数更糟。
@@ -729,6 +792,11 @@ async function boot() {
     move: (direction) => void performMove(direction),
     aiStep: () => void aiStep(),
     isDegraded: () => transportDegraded,
+    /**
+     * 当前 AI 走的是哪条通道：'native'（APK 里的 C++ 引擎）/ 'websocket' / 'local'。
+     * 排查"AI 没反应"时第一个该看的就是它。
+     */
+    aiChannel: () => transportSource,
     /** 当前这一局的种子 —— 复现问题时需要它。 */
     currentSeed: () => (game ? game.seed : null),
   };

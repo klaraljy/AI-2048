@@ -142,6 +142,34 @@ engine\build\ai2048-cli.exe selftest --depth 8 --difficulty hard
    我数错过两次（得到 `E:\DeepSeekProjects\engine` 和 `E:\engine`），
    而 CMake 只会说"目录不存在"，不会告诉你差了几层。
 
+### 排查：手机上"AI 没反应"怎么定位
+
+手机端的表现只是**按了没反应**，从界面看不出是哪一环断了。三步定位：
+
+1. **看通道**：长按「AI操作」按钮，提示里会写当前用的是哪个引擎
+   （手机内置引擎（C++）/ 桌面引擎 / 降级 AI（简化版））。
+   控制台里也可以 `AI2048.aiChannel()`。
+2. **看提示条**：AI 通道出错或引擎没给出走子时，页面顶部会显示提示条并说明原因。
+   改之前是静默 return —— 什么都看不到，这也是这次踩坑最久的地方。
+3. **连电脑调试**：debug 包已打开 WebView 远程调试。手机连上数据线后，
+   电脑 Chrome 打开 `chrome://inspect`，选中这个 WebView，控制台里敲：
+
+   ```js
+   window.AI2048Native                 // 有对象 = 桥注入成功；undefined = 没注入
+   window.AI2048Native.engineInfo()    // null = .so 没加载成功
+   AI2048.aiChannel()                  // 实际使用的通道
+   ```
+
+### 棋盘格式：native 与 WebSocket **必须同契约**
+
+前端发来的是 **4×4 数值数组**（0/2/4/8…），不是一维指数数组。
+`NativeEngine.parseBoardToExponents` 按 `engine/src/net/protocol.cpp` 的 `ParseBoard`
+同样校验：非 2 的幂一律拒绝，**不静默修正**。
+
+⚠️ 第一版把这里写成"一维 16 个指数"，长度检查直接失败 → 返回 null →
+**AI 一步都不走而且不报错**。用户看到的正是"AI操作没反应"。
+改协议时两条路要一起改 —— 只改一边就是分叉，而且不会报错。
+
 ### NDK
 
 **已装** `ndk;29.0.14206865`（`D:\Codex Tools\Android\ndk\29.0.14206865`），

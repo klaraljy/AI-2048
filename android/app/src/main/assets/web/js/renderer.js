@@ -17,9 +17,23 @@ const SIZE = 4;
 
 /** 动画时长（毫秒）。必须与 css/style.css 里的 --slide-ms 等保持一致。 */
 const TIMING = {
-  slide: 110,
-  mergePop: 170,
-  appear: 160,
+  /**
+   * 滑动时长。**必须与 style.css 里 .tile 的 `transition: transform` 一致** ——
+   * 这里等多久，就是动画播多久。
+   *
+   * ⚠️ 这套数字是按"手感"调的，用户反馈"屏幕操作有一定的延迟"。
+   * 原来 slide 110 / mergePop 170 / appear 160，从走子到画面稳定实测 **293ms**；
+   * 一次操作的总延迟 = 浏览器手势消歧 + 手指滑到阈值 + 这一段动画，
+   * 三样加起来才 300~400ms，主观上就是"慢半拍"。
+   * 现在各砍掉约 30%，让一步的反馈落在 200ms 以内（人机交互里
+   * 100~200ms 才算"跟手"，超过 300ms 就会被感觉成延迟）。
+   *
+   * 调小可以更快，但再小就看不到"滑过去"的过程了 —— 滑动本身是这个游戏的信息，
+   * 不是装饰。真要更快应该先动阈值（SWIPE_THRESHOLD），而不是把动画压没。
+   */
+  slide: 80,
+  mergePop: 130,
+  appear: 120,
 };
 
 function prefersReducedMotion() {
@@ -73,6 +87,12 @@ export class Renderer {
     this.nextId = 1;
     this._busy = false;
     this._scoreShown = 0;
+    /**
+     * 尚未执行的"延迟清理"。用于**打断动画**：下一次动画开始时先把这些收尾跑掉，
+     * 否则上一次动画残留的节点/样式会盖在新动画上。
+     * @type {{timer: number, run: () => void}[]}
+     */
+    this._pendingCleanups = [];
 
     this._buildGrid();
   }
@@ -127,6 +147,60 @@ export class Renderer {
     return this._busy;
   }
 
+  /**
+   * 延迟执行一个**必须能提前收尾**的清理动作。
+   *
+   * 只用于那些"留着不收尾会干扰下一帧"的操作（删掉滚出画面的旧数字、
+   * 复位被滚动的样式）。单纯的装饰性类移除（`.new` / `.merged`）不需要走这里 ——
+   * 它们晚一点摘掉没有任何影响。
+   */
+  _later(run, ms) {
+    const entry = { timer: 0, run };
+    entry.timer = setTimeout(() => {
+      const index = this._pendingCleanups.indexOf(entry);
+      if (index >= 0) this._pendingCleanups.splice(index, 1);
+      run();
+    }, ms);
+    this._pendingCleanups.push(entry);
+  }
+
+  /** 立刻把所有待收尾的清理跑掉。 */
+  _runPendingCleanups() {
+    const pending = this._pendingCleanups;
+    this._pendingCleanups = [];
+    for (const entry of pending) {
+      clearTimeout(entry.timer);
+      try {
+        entry.run();
+      } catch {
+        // 收尾失败不该影响接下来的动画
+      }
+    }
+  }
+
+  /**
+   * 立刻结束进行中的动画，让新的一步能马上开始。
+   *
+   * ## 为什么需要它（用户反馈"反应慢慢的、卡卡的"）
+   *
+   * 原来走子期间玩家的输入被**直接丢弃**（`performMove` 开头 `if (renderer.busy()) return`）。
+   * 一次动画约 250~400ms，快速连滑时有相当比例的动作被吃掉 —— 手感就是"没反应"。
+   *
+   * 现在改成**打断**：新走子先把上一次动画收尾（清掉残留节点与定时器），
+   * 再立刻开始新的动画。游戏逻辑本来就是同步的（`game.step` 已经落定），
+   * 所以打断只影响观感，不会让状态错位。
+   *
+   * @returns {boolean} 是否确实打断了一个进行中的动画
+   */
+  finishNow() {
+    const wasBusy = this._busy;
+    this._runPendingCleanups();
+    // 定时器已经清掉，等待动画的 await 会自然返回；这里先把锁放开，
+    // 让调用方紧接着的那一步能开始。
+    this._busy = false;
+    return wasBusy;
+  }
+
   /** 按逻辑棋盘全量重建（新游戏 / 撤销 / 首次渲染）。 */
   reset(board, { score = 0, best = 0 } = {}) {
     this.tilesLayer.innerHTML = '';
@@ -161,8 +235,7 @@ export class Renderer {
     this._applyTransform(node, row, col, animate);
     if (animate) {
       node.classList.add('new');
-      setTimeout(() => node.classList.remove('new'), TIMING.appear + 40);
-    }
+      setTimeout(() => node.classList.remove('new'), TIMING.appear + 40);    }
 
     this.nodes.set(id, node);
     this.tiles.set(id, { row, col, exponent });
@@ -179,6 +252,8 @@ export class Renderer {
    * @returns {Promise<void>} 动画结束时 resolve
    */
   async animateMove(step, beforeBoard, scoreAfter, bestAfter) {
+    // 打断上一次动画：先把它的残留收尾，避免两层动画互相踩。
+    this._runPendingCleanups();
     this._busy = true;
     const reduced = prefersReducedMotion();
     const slideMs = reduced ? 0 : TIMING.slide;
@@ -290,6 +365,8 @@ export class Renderer {
    * @returns {Promise<void>} 动画结束时 resolve
    */
   async animateUndo(previousBoard, scoreBefore, scoreAfter, bestAfter) {
+    // 与 animateMove 同理：打断上一次动画，先收尾再开始
+    this._runPendingCleanups();
     this._busy = true;
     const reduced = prefersReducedMotion();
     const slideMs = reduced ? 0 : TIMING.slide;
@@ -511,7 +588,10 @@ export class Renderer {
     outgoing.style.transform = 'translateY(0)';
     target.style.transform = 'translateY(0)';
 
-    setTimeout(() => {
+    // 用 _later 而不是裸 setTimeout：这个回调**必须**能被提前执行。
+    // 若上一次滚动还没收尾就被下一次动画打断，残留的 outgoing 会叠在分数上，
+    // 而且它还会在 300ms 后把 target 的 transform 清掉 —— 那正好是新动画刚开始的时候。
+    this._later(() => {
       outgoing.remove();
       target.style.transition = '';
       target.style.transform = '';

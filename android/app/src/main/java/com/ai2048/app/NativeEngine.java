@@ -108,8 +108,19 @@ public final class NativeEngine {
         /**
          * 算一步。
          *
-         * @param boardJson 长度 16 的指数数组（0 = 空格，1 = 2，2 = 4 …），
-         *                  顺序 row * 4 + col，与 web/js/game.js 的表示一致
+         * ## 棋盘格式（**必须与 WebSocket 那条路完全一致**）
+         *
+         * 收的是 **4×4 的数值数组**（0 / 2 / 4 / 8 …），每个格必须是 0 或 2 的幂。
+         * 这是 docs/protocol.md 的约定，服务端 `ParseBoard`（engine/src/net/protocol.cpp）
+         * 就是按它校验的：非 2 的幂要**报错而不是静默修正** ——
+         * 静默 clamp 会让 AI 模拟的规则与现实规则悄悄错位（原型的规则漂移就是这么来的）。
+         *
+         * ⚠️ 我第一版把这里写成"一维 16 个**指数**"，而前端发的是
+         * `board_values()` 出来的**二维数值**。两处都不对：
+         * 长度检查直接失败 → 返回 null → **AI 一步都不走，而且没有任何报错**。
+         * 用户看到的正是"AI操作没反应"。
+         *
+         * @param boardJson 4×4 数值数组的 JSON，如 [[2,0,4,0],[0,2,0,0],...]
          * @param lastMove  上一步方向名，可为 null
          * @return {"move":"left","engine":"0.0.1","ruleset":3}；无合法走子时 move 为 null
          */
@@ -117,13 +128,10 @@ public final class NativeEngine {
         public String bestMove(String boardJson, String lastMove) {
             if (!AVAILABLE || handle == 0) return null;
             try {
-                JSONArray array = new JSONArray(boardJson);
-                if (array.length() != 16) return null;
+                int[] exponents = parseBoardToExponents(boardJson);
+                if (exponents == null) return null;
 
-                int[] board = new int[16];
-                for (int i = 0; i < 16; i++) board[i] = array.optInt(i, 0);
-
-                final String move = nativeBestMove(handle, board, lastMove);
+                final String move = nativeBestMove(handle, exponents, lastMove);
 
                 JSONObject out = new JSONObject();
                 // move 为 null 是**有意义**的：表示 AI 无步可走，调用方据此停止演示。
@@ -192,6 +200,41 @@ public final class NativeEngine {
                 return null;
             }
         }
+    }
+
+    /**
+     * 把前端发来的 4×4 **数值**棋盘转成引擎要的 16 个**指数**。
+     *
+     * 严格按 engine/src/net/protocol.cpp 的 ParseBoard 校验：非 2 的幂一律拒绝，
+     * **不静默修正**。静默 clamp 会让 AI 的世界模型与现实规则悄悄错位，
+     * 而且不报错 —— 原型的"规则漂移"就是这么开始的。
+     *
+     * @return 长度 16 的指数数组（row * 4 + col）；格式非法时返回 null
+     */
+    private static int[] parseBoardToExponents(String boardJson) throws org.json.JSONException {
+        JSONArray rows = new JSONArray(boardJson);
+        if (rows.length() != 4) return null;
+
+        int[] exponents = new int[16];
+        for (int row = 0; row < 4; row++) {
+            JSONArray cells = rows.optJSONArray(row);
+            if (cells == null || cells.length() != 4) return null;
+            for (int col = 0; col < 4; col++) {
+                final int value = cells.optInt(col, -1);
+                if (value < 0) return null;
+                if (value == 0) {
+                    exponents[row * 4 + col] = 0;
+                    continue;
+                }
+                // 2 的幂校验：value & (value - 1) == 0，且 value 本身是整数
+                if ((value & (value - 1)) != 0) {
+                    Log.w(TAG, "board cell is not a power of two: " + value);
+                    return null;
+                }
+                exponents[row * 4 + col] = Integer.numberOfTrailingZeros(value);
+            }
+        }
+        return exponents;
     }
 
     /**

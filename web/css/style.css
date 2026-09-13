@@ -68,6 +68,22 @@ body {
   justify-content: center;
   padding: 20px 16px 40px;
   -webkit-tap-highlight-color: transparent;
+  /* ---------------------------------------------------------------------------
+     关掉浏览器的手势消歧
+     ---------------------------------------------------------------------------
+     触屏上浏览器默认要把 `touch-action` 留成 auto：手指落下后它要先等约 100ms，
+     看这一下到底是"滚动页面"还是"应用自己处理的手势"，才把 pointer 事件发出来。
+     对一个整屏的游戏来说这段等待是纯延迟 —— 用户反馈的"屏幕操作有一定的延迟"
+     里就有它一份。
+
+     `none` 表示"这块区域的触摸全部由页面自己处理"，浏览器不再等：
+     pointerdown 立刻送达。代价是页面不能滑动/双指缩放 ——
+     游戏本来就是一屏、棋盘早就写了 touch-action: none，
+     这里只是把这个范围扩到整个页面。
+
+     ⚠️ 只加在 body 上，不要加到 html：某些浏览器里 html 的 touch-action
+     会影响视口外的系统手势（下拉刷新、侧滑返回）。 */
+  touch-action: none;
 }
 
 .app {
@@ -712,8 +728,9 @@ button.active svg {
   border-radius: var(--radius);
   font-weight: 800;
   font-variant-numeric: tabular-nums;
-  /* 时长必须与 renderer.js 的 TIMING.slide 一致，否则动画结束后位置会跳 */
-  transition: transform 110ms ease-in-out;
+  /* 时长必须与 renderer.js 的 TIMING.slide 一致，否则动画结束后位置会跳。
+     80ms 是"手感"调过的值：原来 110ms，用户反馈操作有延迟（见 renderer.js 的说明）。 */
+  transition: transform 80ms ease-in-out;
   will-change: transform;
   color: var(--text-light);
 }
@@ -820,12 +837,13 @@ button.active svg {
   }
 }
 
+/* 时长与 renderer.js 的 TIMING.appear / TIMING.mergePop 对应 */
 .tile.new {
-  animation: tile-appear 160ms ease-out;
+  animation: tile-appear 120ms ease-out;
 }
 
 .tile.merged {
-  animation: tile-merge 170ms ease-out;
+  animation: tile-merge 130ms ease-out;
 }
 
 /* ---------------------------------------------------------------------------
@@ -840,8 +858,10 @@ button.active svg {
    看不到渐显。所以先挂 .undo-appear（opacity:0），下一帧再摘掉，
    过渡才会真的从 0 走到 1。 */
 .tile {
-  /* transform 的过渡沿用上面那条；这里补 opacity，时长略短于滑动 */
-  transition: transform 110ms ease-in-out, opacity 120ms ease-out;
+  /* transform 的过渡沿用上面那条；这里补 opacity，时长略短于滑动。
+     ⚠️ 两条 .tile 规则里 transform 的时长**必须一致**（现在都是 80ms）——
+     后一条会覆盖前一条，写歪了滑动就会时快时慢。 */
+  transition: transform 80ms ease-in-out, opacity 100ms ease-out;
 }
 
 .tile.undo-out {

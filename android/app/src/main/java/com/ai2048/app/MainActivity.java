@@ -52,6 +52,15 @@ public class MainActivity extends ComponentActivity {
         webView = new WebView(this);
         setContentView(webView);
 
+        // debug 包打开 WebView 远程调试：电脑 Chrome 访问 chrome://inspect 就能连上，
+        // 直接在控制台里敲 `window.AI2048Native`、`AI2048.aiChannel()`。
+        //
+        // 为什么值得开：手机端"AI 没接上"的表现只是**按了没反应**，从界面完全看不出
+        // 是哪一环断了（库没加载？棋盘格式被拒？引擎回 null？）。
+        // 有了这个，接上数据线就能一眼定位，不用靠猜或反复改代码试。
+        // release 包里会自动关掉（BuildConfig.DEBUG 为 false）。
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
+
         // 把 C++ 引擎注入成 window.AI2048Native。
         // 名字里的 NativeEngine 只是调试用的标签，页面不读它。
         // 库加载失败时 addJavascriptInterface 照常执行，但对象里的方法全部返回
