@@ -238,9 +238,12 @@ engine/  (静态库 ai2048_core，不依赖网络/文件系统/线程模型)
 | **`docs/lessons-learned.md`** | **这个项目犯过的错：32 条，按流程 / 构建 / 前端 / 算法 / 测量分类** |
 | `android/README.md` | Android 构建、资源同步、JNI 说明、真机排查步骤 |
 
+## 许可
+
+[MIT](LICENSE) © 2026 klaraljy
+
 ## 未确定的事项
 
-- **许可证**：尚未选择（开源前需要定）；
 - **Android UI 方案**：当前是 WebView 套 `web/`，要不要换原生 Kotlin + Compose
   （手感更好，但动画要写两遍，且会产生两套需要同步维护的界面）；
 - 阶段二网络规模、音效来源、是否做暗色模式。
