@@ -94,6 +94,13 @@ export class Renderer {
      */
     this._pendingCleanups = [];
 
+    /**
+     * 动画代次。每次打断 +1；动画在**每个 await 之后**都比对一次，
+     * 一旦发现自己已被取代就立刻退出，不再碰任何节点。
+     * 详见 animateMove 里的说明（少了它会出重复方块）。
+     */
+    this._generation = 0;
+
     this._buildGrid();
   }
 
@@ -179,26 +186,29 @@ export class Renderer {
   }
 
   /**
-   * 立刻结束进行中的动画，让新的一步能马上开始。
+   * 立刻结束进行中的动画。
    *
-   * ## 为什么需要它（用户反馈"反应慢慢的、卡卡的"）
+   * ⚠️ **当前没有调用方，保留是为了说明为什么"打断动画"这条路走不通。**
    *
-   * 原来走子期间玩家的输入被**直接丢弃**（`performMove` 开头 `if (renderer.busy()) return`）。
-   * 一次动画约 250~400ms，快速连滑时有相当比例的动作被吃掉 —— 手感就是"没反应"。
+   * 起因：用户反馈"操作有延迟"。当时 `performMove` 在动画期间**直接丢弃**输入，
+   * 我判断这是延迟的主要来源，于是改成"打断上一次动画、立刻走这一步"。
    *
-   * 现在改成**打断**：新走子先把上一次动画收尾（清掉残留节点与定时器），
-   * 再立刻开始新的动画。游戏逻辑本来就是同步的（`game.step` 已经落定），
-   * 所以打断只影响观感，不会让状态错位。
+   * 实测结果是**渲染层被弄脏**，而且很隐蔽：
+   *   走子时会把每个方块的 `row/col` **就地改成目标格**（这样索引才对得上轨迹），
+   *   然后才等 CSS 过渡。此时若被打断，下一次走子取"走子前棋盘"快照时，
+   *   方块在**记录上**已经在目标格了 —— 收尾逻辑于是又往那些格子补了一块，
+   *   结果同一格出现两个方块。压测（20ms/40ms 连发）能稳定复现：
+   *   渲染层记录里出现 `0,3 | 0,3`、`2,1 | 2,1`。
    *
-   * @returns {boolean} 是否确实打断了一个进行中的动画
+   * 正确做法要么是"逻辑位置与视觉位置分开记账"（改动面大），
+   * 要么就**老实地丢弃动画期间的输入** —— 后者是原设计，250~400ms 的锁
+   * 对一个回合制游戏完全够用。所以这条路暂时封掉，别再顺手打开。
+   *
+   * @returns {boolean} 是否确实处于动画中
    */
   finishNow() {
-    const wasBusy = this._busy;
-    this._runPendingCleanups();
-    // 定时器已经清掉，等待动画的 await 会自然返回；这里先把锁放开，
-    // 让调用方紧接着的那一步能开始。
-    this._busy = false;
-    return wasBusy;
+    void this;
+    return this._busy;
   }
 
   /** 按逻辑棋盘全量重建（新游戏 / 撤销 / 首次渲染）。 */
@@ -255,6 +265,19 @@ export class Renderer {
     // 打断上一次动画：先把它的残留收尾，避免两层动画互相踩。
     this._runPendingCleanups();
     this._busy = true;
+
+    /**
+     * 本次动画的代次。**每一个 `await` 之后都必须重新校验它** ——
+     * 动画可以被下一次走子打断（`finishNow` 会改变代次），
+     * 而 await 只是让出执行权，被打断的那一次**依然会继续往下跑**。
+     *
+     * ⚠️ 少了这个守卫会怎样（实测）：旧动画在 await 之后继续执行，
+     * 把新动画正在用的方块节点删掉、又按自己的旧数据补回"被吸收的块"，
+     * 结果同一格里出现两个方块 —— 画面上就是抖动、重叠。
+     * 我用"连发 12 次走子"复现过：`重复位置: 1`。
+     */
+    const generation = this._generation;
+    const superseded = () => generation !== this._generation;
     const reduced = prefersReducedMotion();
     const slideMs = reduced ? 0 : TIMING.slide;
 
@@ -301,6 +324,7 @@ export class Renderer {
     }
 
     await sleep(slideMs);
+    if (superseded()) return;
 
     // 第二步：合并的块换值并弹跳；被吸收的块消失
     for (const { id, exponent } of mergedTargets) {
@@ -332,6 +356,7 @@ export class Renderer {
     this.setBest(bestAfter);
 
     await sleep(reduced ? 0 : Math.max(TIMING.mergePop, TIMING.appear));
+    if (superseded()) return;
     this._busy = false;
   }
 
@@ -368,6 +393,9 @@ export class Renderer {
     // 与 animateMove 同理：打断上一次动画，先收尾再开始
     this._runPendingCleanups();
     this._busy = true;
+    // 代次守卫，理由见 animateMove（被打断的动画必须立刻停手）
+    const generation = this._generation;
+    const superseded = () => generation !== this._generation;
     const reduced = prefersReducedMotion();
     const slideMs = reduced ? 0 : TIMING.slide;
     const exitMs = reduced ? 0 : 140;
@@ -459,6 +487,9 @@ export class Renderer {
     // 正确做法是下面和滑动同一帧改值 —— 视觉上就是"滑回来 + 分开"。
     await sleep(exitMs);
 
+    // 被取代就立刻停手（理由见 animateMove）
+    if (superseded()) return;
+
     // 渐显的块这时候才摘掉 .undo-appear：它们在上一段里保持透明，
     // 现在与整盘滑动一起浮现。
     for (const node of appearing) node.classList.remove('undo-appear');
@@ -487,6 +518,8 @@ export class Renderer {
 
     await sleep(slideMs);
 
+    // 与 animateMove 同理：被取代时不能清 `_busy`（那属于新动画）
+    if (superseded()) return;
     this._busy = false;
   }
 

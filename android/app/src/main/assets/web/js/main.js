@@ -217,14 +217,13 @@ async function applyStrength() {
 const input = new Input({
   onMove: (direction) => void performMove(direction),
   /**
-   * 查询式上锁：只锁"确实不能走子"的情况。
+   * 查询式上锁：动画进行中或 AI 自动播放时丢弃玩家输入。
    *
-   * ⚠️ **不要再把 `renderer.busy()` 放进来。** 那会让动画期间（约 250~400ms）
-   * 的滑动被直接丢弃，快速连滑时有相当比例的动作被吃掉 ——
-   * 用户的手感就是"反应慢慢的、卡卡的"。
-   * 动画现在是可以被打断的：`performMove` 会先 `renderer.finishNow()` 收尾上一次动画。
+   * ⚠️ **`renderer.busy()` 必须留在这里。** 曾经为了降延迟把它去掉、改成
+   * "打断动画"，结果渲染层出现重复方块（见 performMove 的说明）。
+   * 输入锁是这个项目早期踩过坑才做对的（见 input.js 顶部注释），别动它。
    */
-  isLocked: () => autoRunning || game === null || game.gameOver,
+  isLocked: () => renderer.busy() || autoRunning || game === null || game.gameOver,
   // 规则弹窗开着时：手指仍可拖动（能看规则），但不该走子。
   // ⚠️ 判定用 `.show` 类（modal 的显隐方式），不是 `.hidden`。
   isSwipeBlocked: () => el.rulesModal.classList.contains('show'),
@@ -279,13 +278,14 @@ function refreshControls() {
 // ------------------------------------------------------------------ 走子
 
 async function performMove(direction) {
-  // ⚠️ 这里原来写的是 `if (renderer.busy()) return false;` —— 动画期间（约 250~400ms）
-  // 玩家的滑动被**直接丢弃**。快速连滑时有相当比例的动作被吃掉，手感就是"没反应、
-  // 卡卡的"（用户 2026-09-13 反馈）。
+  // 动画期间**丢弃**输入，而不是打断动画。
   //
-  // 现在改成**打断上一次动画**再走这一步：游戏逻辑本来就已同步落定，
-  // 打断只影响观感，不会让状态错位。
-  if (renderer.busy()) renderer.finishNow();
+  // ⚠️ 这里试过改成"打断上一次动画再走这一步"来降延迟，结果**渲染层被弄脏**：
+  // 走子时方块的 row/col 会就地改成目标格，此时打断会让下一次走子的
+  // "走子前棋盘"取到已经改过的坐标，收尾时于是往那些格子补块 ——
+  // 同一格出现两个方块（压测 20ms/40ms 连发可稳定复现）。
+  // 详见 renderer.js 的 finishNow 说明。250~400ms 的锁对回合制游戏是合理的。
+  if (renderer.busy()) return false;
   if (!game || game.gameOver) return false;
 
   const before = game.board.map((row) => row.slice());
@@ -797,6 +797,20 @@ async function boot() {
      * 排查"AI 没反应"时第一个该看的就是它。
      */
     aiChannel: () => transportSource,
+    /**
+     * 渲染层内部记录的方块（调试/测试用）。
+     *
+     * 为什么要暴露它：**渲染层的内部状态与 DOM 必须一致**，而"打断动画"
+     * 出过一次两者不一致（同一格两个方块、被吸收的块没删）。
+     * 只看 DOM 看不出哪个是多余的，两边对照才能定位。
+     */
+    debugTiles: () =>
+      [...renderer.tiles.entries()].map(([id, t]) => ({
+        id,
+        row: t.row,
+        col: t.col,
+        value: 2 ** t.exponent,
+      })),
     /** 当前这一局的种子 —— 复现问题时需要它。 */
     currentSeed: () => (game ? game.seed : null),
   };
