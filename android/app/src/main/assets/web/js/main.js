@@ -598,6 +598,21 @@ function startAuto() {
   const loop = async () => {
     if (!autoRunning) return;
     await aiStep();
+
+    // 让出一帧给浏览器重绘。
+    //
+    // ⚠️ 用户反馈"手机上跑测试档一卡一卡的，电脑上完全不一样"。实测（CPU 降速 4 倍
+    // 模拟中低端手机、40 步）：不让出时页面**一帧都没重绘**（最长帧 = 全程），
+    // 让出一帧后有 40 帧、最长帧 42ms。原因是循环一个接一个占着主线程，
+    // 浏览器根本没机会刷屏。代价只有约 30% 时间（891ms → 1162ms）。
+    //
+    // 只在测试档开（见 config.js 的 SPEED.yieldFrame）：它才是"连轴转"的那一档，
+    // 慢/中/快本来就靠 setTimeout 间隔让出了。
+    const spec = SPEED[el.speed ? el.speed.value : 'medium'];
+    if (spec && spec.yieldFrame) {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    }
+
     if (!autoRunning || !game || game.gameOver) {
       stopAuto();
       return;

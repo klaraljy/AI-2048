@@ -93,6 +93,18 @@ async function main() {
       .map(([k, v]) => `${k}=${v.instant}`)
       .join(' ')
   );
+  // 测试档必须让出帧：它间隔为 0，不让出就是"连轴转占满主线程"，
+  // 实测（CPU 降速 4 倍）页面会**一帧都不重绘** —— 用户报的"手机上卡"就是这个。
+  check(
+    '只有"测试"档需要让出帧（它间隔为 0，否则会占满主线程不重绘）',
+    SPEED.test.yieldFrame === true &&
+      SPEED.slow.yieldFrame !== true &&
+      SPEED.medium.yieldFrame !== true &&
+      SPEED.fast.yieldFrame !== true,
+    Object.entries(SPEED)
+      .map(([k, v]) => `${k}=${v.yieldFrame}`)
+      .join(' ')
+  );
 
   console.log('\n[3] 超时必须大于引擎的思考预算');
   for (const [key, spec] of Object.entries(STRENGTH)) {
