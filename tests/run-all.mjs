@@ -27,6 +27,12 @@ const SUITES = [
   ['难度规则（前端 ↔ 引擎逐位对拍）', 'difficulty-parity.test.mjs'],
   ['JSON 解析器（与 JSON.parse 对拍）', 'json-parity.test.mjs'],
   ['渲染与动画（headless）', 'renderer.test.mjs'],
+  // main.js 至今**没有**自动化覆盖（它需要真实 DOM，而 dom-stub 的
+  // getElementById 返回 null）。这一套用静态检查覆盖那个盲区：
+  // id 是否都存在、事件绑定会不会因 null 元素而中断、
+  // overlay 的显示状态是否只有一处写入。
+  // 起因：用户报告「结束后弹窗的按钮没反应」，就是最后一类问题。
+  ['main.js 结构一致性（id/绑定/显示归属）', 'main-structure.test.mjs'],
   ['输入与输入锁', 'input.test.mjs'],
   ['降级路径（无 WebAudio / 连不上引擎）', 'degraded.test.mjs'],
   // AI 强度/速度的契约：界面承诺「看 2 步」就必须真的搜 2 步

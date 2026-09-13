@@ -50,20 +50,28 @@ function fillSelect(select, options, defaultValue) {
   }
 }
 
+/**
+ * 一次性取齐所有 DOM 元素。
+ *
+ * ⚠️ 只放真正用到的元素 —— 死引用（声明了却从不使用）会**掩盖真实的拼写错误**：
+ * 原先有两项指向 HTML 里根本不存在的 id（`seed-shown`、`difficulty-note`），
+ * 靠 `if (el.x)` 兜着所以不报错，只是永远不执行。
+ * `tests/main-structure.test.mjs` 现在会检查"每个 id 都真实存在"。
+ *
+ * 注意本文件里 `el.` 有**两种**用法，检查工具要都能识别：
+ * 直接调用（`el.undo.disabled = ...`）与整对象传参（`tilesLayer: el.tiles`）。
+ */
 const el = {
   board: document.getElementById('board'),
   grid: document.getElementById('grid'),
   tiles: document.getElementById('tiles'),
   score: document.getElementById('score'),
   best: document.getElementById('best'),
-  seed: document.getElementById('seed'),
-  seedShown: document.getElementById('seed-shown'),
   difficulty: document.getElementById('difficulty'),
-  difficultyNote: document.getElementById('difficulty-note'),
   difficultyNotice: document.getElementById('difficulty-notice'),
   strength: document.getElementById('strength'),
   speed: document.getElementById('speed'),
-  newGame: document.getElementById('new-game'),
+  newGameButton: document.getElementById('new-game'),
   undo: document.getElementById('undo'),
   aiStep: document.getElementById('ai-step'),
   aiAuto: document.getElementById('ai-auto'),
@@ -77,7 +85,23 @@ const el = {
   bestBox: document.getElementById('best-box'),
   fxLeft: document.getElementById('fx-left'),
   fxRight: document.getElementById('fx-right'),
+  rules: document.getElementById('rules'),
+  rulesModal: document.getElementById('rules-modal'),
+  rulesBody: document.getElementById('rules-body'),
+  rulesClose: document.getElementById('rules-close'),
 };
+
+/**
+ * 下一局的固定种子；null = 随机。
+ *
+ * ⚠️ 界面上**没有**任何种子控件（用户要求：玩家每次打开都必须是随机的，
+ * 也不该看到"随机"这种东西）。所以这个变量只能由程序设置：
+ *
+ *     window.AI2048.newGame(12345)   // 浏览器控制台 / Android WebView 桥接
+ *
+ * 保留它的理由是**可复现性**：同种子才能把两次改动的结果放在一起比。
+ * 这是本项目所有 AI 测试的地基（compare / bench 都依赖固定种子）。 */
+let pendingSeed = null;
 
 /** 从 URL 查询参数读引擎地址：?engine=ws://127.0.0.1:8765 */
 function readEngineUrl() {
@@ -207,7 +231,20 @@ document.addEventListener('keydown', unlockAudioOnce, { capture: true });
 function refreshControls() {
   el.undo.disabled = !game || !game.canUndo || renderer.busy();
   el.aiStep.disabled = !game || renderer.busy() || game.gameOver;
-  el.overlayUndo.style.display = game && game.canUndo ? '' : 'none';
+  // ⚠️ 这里**不要**去动 overlay 里那两个按钮的 style.display。
+  //
+  // 踩过的 bug（用户报告「结束后弹窗的两个按钮没反应」）：
+  // 原先这里有 `el.overlayUndo.style.display = game && game.canUndo ? '' : 'none'`，
+  // 而它在 performMove() 里紧跟在 checkEndState() **之后**执行（见那里的两行调用）：
+  //
+  //     checkEndState();    // showOverlay(...) → 按 allowUndo 正确显示按钮
+  //     refreshControls();  // 立刻又设 inline display:none，把按钮藏掉
+  //
+  // 游戏结束时 gameOver 为真 → canUndo 为假 → 按钮在同一帧里被隐藏，
+  // 于是"弹窗出来了但点不动"。**内联样式优先级高于类，是静默生效的。**
+  //
+  // 现在 overlay 的显示状态**只由 showOverlay / hideOverlay 两处负责**
+  //（单一归属），refreshControls 不再插手。
 }
 
 // ------------------------------------------------------------------ 走子
@@ -312,7 +349,11 @@ function checkEndState() {
 function showOverlay(title, text, { allowUndo = false, transient = false } = {}) {
   el.overlayTitle.textContent = title;
   el.overlayText.textContent = text;
+  // 两个按钮的显示状态**只在这里与 hideOverlay 决定**（单一归属）。
+  // 「再来一局」永远可用 —— 它此前从没被显式设置过，一旦被别处留下 inline
+  // display:none 就再也回不来了，所以这里显式复位。
   el.overlayUndo.style.display = allowUndo ? '' : 'none';
+  el.overlayRestart.style.display = '';
   el.overlay.classList.add('show');
   if (transient) {
     setTimeout(() => {
@@ -325,7 +366,96 @@ function showOverlay(title, text, { allowUndo = false, transient = false } = {})
 
 function hideOverlay() {
   el.overlay.classList.remove('show');
+  // 收起时把 inline display 清干净，下一个面板从"默认可见"开始 ——
+  // 否则上一个面板留下的 none 会带进下一局（同样是静默的）。
+  el.overlayUndo.style.display = '';
+  el.overlayRestart.style.display = '';
 }
+
+// ------------------------------------------------------------------ 规则弹窗
+
+/**
+ * 规则说明的内容。
+ *
+ * ⚠️ **这里的每个数字都必须与实现一致**，因为它会显示给玩家。
+ * 写死的文案最容易随改动作废 —— 本项目就发生过：难度改成"填满行/列"之后，
+ * 下拉框里还写着"80% 生成在最大块旁"。改规则时**必须回来核对这里**。
+ *
+ * 数据来源（改的时候对这几处）：
+ *   出 4 概率      → engine/src/core/game.h 的 kFourSpawnEasy/Normal/Hard
+ *   难度的生成策略 → engine/src/core/game.cpp 的 SafeScore / HostileScore
+ *   加权占比       → engine/src/core/game.h 的 kEasy/HardWeightedShare
+ *   三档强度深度   → web/js/config.js 的 STRENGTH
+ */
+const RULES_HTML = `
+  <h3>怎么玩</h3>
+  <ul>
+    <li>4×4 棋盘，开局两个方块。四个方向滑动，同值方块相撞合并成两倍。</li>
+    <li>每移动一次会在空格里生成一个新方块：<strong>2</strong> 或 <strong>4</strong>。</li>
+    <li>合并出的方块同一次移动内不再二次合并。</li>
+    <li>棋盘填满且四个方向都动不了时结束；分数＝所有合并出的方块值之和。</li>
+    <li>合出 <strong>2048</strong> 不弹窗打断（可以继续往上合）。</li>
+  </ul>
+
+  <h3>难度改变的是生成规则</h3>
+  <p class="rule-note">难度不是"AI 强弱"，而是新方块出现在哪、出现多大的概率。</p>
+  <table class="rule-table">
+    <tr><th>难度</th><th>新方块落点</th><th>出 4 的概率</th></tr>
+    <tr><td>简单</td><td>80% 偏向安全位置（角落、边上、空旷处），20% 全盘随机</td><td>10%</td></tr>
+    <tr><td>中等</td><td>全盘随机（标准 2048 规则）</td><td>15%</td></tr>
+    <tr><td>困难</td><td>88% 偏向"把某一行／列填满"的位置，12% 全盘随机</td><td>20%</td></tr>
+  </table>
+  <p class="rule-note">
+    困难档的用意：一行只要还有空位就能被继续滑动，<strong>填满之后就变刚性</strong>，
+    你只能靠移动整盘来重新腾挪。所以它会优先去填那些"已经快满了"的行或列。
+    它还会避开能让你立刻合并的位置，以及角落（角落对你有利）。
+  </p>
+  <p class="rule-note">
+    ⚠️ 非中等难度的分数<strong>不可与标准难度或历史最高分比较</strong> ——
+    规则的期望收益不同。
+  </p>
+
+  <h3>AI 强度</h3>
+  <table class="rule-table">
+    <tr><th>档位</th><th>前瞻深度</th><th>每步思考上限</th></tr>
+    <tr><td>入门</td><td>4 层（2 步）</td><td>300 ms</td></tr>
+    <tr><td>标准</td><td>6 层（3 步）</td><td>800 ms</td></tr>
+    <tr><td>最强</td><td>8 层（4 步）</td><td>2500 ms</td></tr>
+  </table>
+  <p class="rule-note">
+    深度单位是"搜索树层数"：AI 走一步、随机生成一次，各算一层，所以看 N 步＝2N 层。
+    空格变少时它会自动加深（最高约 12 层）；时间只是上限，实际通常远低于它。
+  </p>
+  <p class="rule-note">
+    这个 AI 是"期望最大化搜索＋手写评分"。它的评分项包括：单调性、可合并对、
+    蛇形排布、最大块位置、空格数等。上一轮的基准：
+    标准档平均约 5 万，最强档在中等难度平均约 7 万、困难难度约 6 万。
+  </p>
+
+  <h3>快捷键</h3>
+  <ul>
+    <li><strong>方向键</strong> 或 <strong>W A S D</strong>：移动；手机上直接滑动</li>
+    <li><strong>R</strong> 新游戏 · <strong>U</strong> 撤销 · <strong>M</strong> 静音</li>
+    <li><strong>空格</strong>：让 AI 走一步</li>
+  </ul>
+`;
+
+function showRules() {
+  el.rulesBody.innerHTML = RULES_HTML;
+  el.rulesModal.classList.add('show');
+}
+
+function hideRules() {
+  el.rulesModal.classList.remove('show');
+}
+
+// Esc 关闭规则弹窗。放在这里而不是 input.js：input.js 只管「游戏操作」按键，
+// 而弹窗的开合属于界面状态。遮罩点击在装配处绑定。
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && el.rulesModal.classList.contains('show')) {
+    hideRules();
+  }
+});
 
 // ------------------------------------------------------------------ AI
 
@@ -379,10 +509,10 @@ function newGame() {
   stopAuto();
   hideOverlay();
 
-  // 「开局」是一个**文本输入框**：填数字就是固定种子，填 random 就随机。
-  // 它只服务于测试（固定种子才能公平比较强度），完结时删掉即可。
-  const raw = (el.seed.value || 'random').trim();
-  const seed = /^\d+$/.test(raw) ? Number(raw) : Math.floor(Math.random() * 1e9);
+  // 种子：默认随机（玩家每次打开都不一样）；只有程序显式给过才用固定值。
+  // 界面没有种子控件 —— 见 pendingSeed 的说明。
+  const seed = pendingSeed !== null ? pendingSeed : Math.floor(Math.random() * 1e9);
+  pendingSeed = null; // 用掉就清空：下一次点击"新游戏"回到随机
 
   // 难度是**规则**的一部分，必须传给 Game —— 不传的话界面选了"简单"
   // 而生成仍然是全盘随机，用户会以为难度没生效（而且他无法分辨）。
@@ -423,9 +553,11 @@ function currentDifficulty() {
  */
 function refreshDifficultyNotice() {
   const value = currentDifficulty();
-  if (el.difficultyNote) {
-    el.difficultyNote.textContent = DIFFICULTY[value] ? DIFFICULTY[value].note : '';
-  }
+  // ⚠️ 这里**曾经**还有一段写 `el.difficultyNote` 的代码，而 HTML 里从来没有
+  // `#difficulty-note` 这个元素 —— 那段是死代码，靠 `if (el.difficultyNote)`
+  // 兜着所以不报错，只是永远不执行。
+  // 难度的即时说明由下面这个 `#difficulty-notice`（真实存在）承担，
+  // 下拉框里每一项的说明由 config.js 的 note 通过 option 文本给出。
   if (!el.difficultyNotice) return;
 
   if (isStandardDifficulty(value)) {
@@ -445,9 +577,16 @@ function toggleMute() {
   if (!muted) sound.unlock();
 }
 
-/** 静音按钮用图标表示状态，不再用文字（文字会把控件行挤开）。 */
+/**
+ * 静音按钮的状态。
+ *
+ * ⚠️ **不要再往按钮里写 emoji / 文字。** 图标是 HTML 里的内联 SVG，
+ * 这里只切 `aria-pressed` —— CSS 依据它显示/隐藏斜杠（见 style.css 的
+ * `#mute[aria-pressed='true']`）。
+ * 以前这里是 `el.mute.textContent = muted ? '🔇' : '🔊'`，
+ * 那样会把 SVG 整个覆盖掉，图标就没了。
+ */
 function updateMuteIcon(muted) {
-  el.mute.textContent = muted ? '🔇' : '🔊';
   el.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
   el.mute.title = muted ? '音效已关（M）' : '音效开（M）';
 }
@@ -485,14 +624,19 @@ async function boot() {
 
   newGame();
 
-  el.newGame.addEventListener('click', () => newGame());
+  el.newGameButton.addEventListener('click', () => newGame());
   el.undo.addEventListener('click', () => void doUndo());
   el.aiStep.addEventListener('click', () => void aiStep());
   el.aiAuto.addEventListener('click', () => (autoRunning ? stopAuto() : startAuto()));
   el.mute.addEventListener('click', () => toggleMute());
   el.overlayRestart.addEventListener('click', () => newGame());
   el.overlayUndo.addEventListener('click', () => void doUndo());
-  el.seed.addEventListener('change', () => newGame());
+  el.rules.addEventListener('click', () => showRules());
+  el.rulesClose.addEventListener('click', () => hideRules());
+  // 点遮罩空白处也关闭（点面板内部不关 —— 用户可能想选中文字）
+  el.rulesModal.addEventListener('click', (event) => {
+    if (event.target === el.rulesModal) hideRules();
+  });
   el.strength.addEventListener('change', () => void applyStrength());
   // 速度只影响下一步之后的间隔，不需要打断正在进行的演示
   el.speed.addEventListener('change', () => {});
@@ -526,16 +670,23 @@ async function boot() {
 
   // 供 Android 的 WebView 桥接使用（里程碑 6）。
   // 只暴露必要动作，不让外部拿到内部对象。
+  //
+  // ⚠️ `newGame(seed)` 是**唯一**能指定种子的入口 —— 界面上没有种子控件
+  //（玩家每次打开都随机，也不该看到"随机"这种东西）。
+  // 我的复现命令：控制台执行 `AI2048.newGame(12345)`。
   window.AI2048 = {
     newGame: (seed) => {
-      // 固定种子走同一个入口（界面上的输入框），避免两条路径行为不一致
-      if (seed !== undefined) el.seed.value = String(seed);
+      if (seed !== undefined && Number.isFinite(Number(seed))) {
+        pendingSeed = Number(seed);
+      }
       newGame();
     },
     undo: () => void doUndo(),
     move: (direction) => void performMove(direction),
     aiStep: () => void aiStep(),
     isDegraded: () => transportDegraded,
+    /** 当前这一局的种子 —— 复现问题时需要它。 */
+    currentSeed: () => (game ? game.seed : null),
   };
 }
 

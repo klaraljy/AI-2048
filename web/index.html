@@ -30,48 +30,97 @@
       </header>
 
       <!--
-        控件全部放在同一行。
-        「难度」带说明所以宽一些；「AI 强度 / AI 速度」用短标签。
-        「开局」是给测试用的（固定种子才能公平比较强度），
-        所以只留一个紧凑的输入框，等完结时删掉即可。
+        控件分两行（用户指定）：
+          第一行 —— 三个选择框（难度 / AI 强度 / AI 速度）+「规则」按钮
+          第二行 —— 五个操作按钮（新游戏 / 撤销 / AI 开始 / AI 走一步 / 音效）
+
+        图标一律用**线性** SVG（stroke），不用 emoji ——
+        emoji 是彩色实物图形，各平台长得不一样，也和整体线条风格不搭。
+        SVG 直接内联在这里，不引外部文件：省一次请求，也能用 currentColor 跟随文字色。
+
+        「开局种子」输入框已删除（用户要求）：玩家每次打开都随机，
+        界面不出现任何种子相关的控件。需要固定种子复现时走
+        `window.AI2048.newGame(12345)`（面向程序的接口，同时供 Android 桥接用）。
       -->
       <div class="controls">
-        <label class="ctl ctl-wide">
-          <span class="ctl-icon" aria-hidden="true">🎯</span>
+        <label class="ctl">
+          <span class="ctl-label">难度</span>
           <select id="difficulty" aria-label="难度"></select>
         </label>
         <label class="ctl">
-          <span class="ctl-icon" aria-hidden="true">🧠</span>
+          <span class="ctl-label">AI 强度</span>
           <select id="strength" aria-label="AI 强度"></select>
         </label>
         <label class="ctl">
-          <span class="ctl-icon" aria-hidden="true">⚡</span>
+          <span class="ctl-label">AI 速度</span>
           <select id="speed" aria-label="AI 速度"></select>
         </label>
-        <span class="spacer"></span>
-        <label class="ctl ctl-seed">
-          <span class="ctl-icon" aria-hidden="true">🎲</span>
-          <input id="seed" type="text" value="random" aria-label="开局种子" />
-        </label>
-        <button id="new-game" type="button" class="ghost" title="新游戏（R）">
-          <span aria-hidden="true">↻</span>
+        <button id="rules" type="button" class="ghost icon-btn" title="规则说明">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10a2 2 0 0 1 2 2v12a1.5 1.5 0 0 0-1.5-1.5H4z" />
+            <path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H14a2 2 0 0 0-2 2v12a1.5 1.5 0 0 1 1.5-1.5H20z" />
+          </svg>
+          <span class="sr-only">规则说明</span>
         </button>
-        <button id="undo" type="button" class="ghost" disabled title="撤销（U）">
-          <span aria-hidden="true">↶</span>
+      </div>
+
+      <div class="controls-row2">
+        <!-- 线性图标：旋转箭头 = 新游戏 -->
+        <button id="new-game" type="button" class="ghost icon-btn" title="新游戏（R）">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+            <path d="M20 4v4h-4" />
+          </svg>
+          <span class="sr-only">新游戏</span>
         </button>
-        <button id="ai-auto" type="button" class="ghost" title="AI 自动演示">
-          <span aria-hidden="true">▶</span>
+
+        <!-- 线性图标：逆时针箭头 = 撤销 -->
+        <button id="undo" type="button" class="ghost icon-btn" disabled title="撤销（U）">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 8h11a5 5 0 0 1 0 10H8" />
+            <path d="M8 4 4 8l4 4" />
+          </svg>
+          <span class="sr-only">撤销</span>
         </button>
+
+        <!-- 线性图标：播放三角 = AI 连续演示 -->
+        <button id="ai-auto" type="button" class="ghost icon-btn" title="AI 自动演示">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 5.5v13l10-6.5z" />
+          </svg>
+          <span class="sr-only">AI 自动演示</span>
+        </button>
+
         <!--
-          单步用 ⇥ 而不是 ⏭：⏭ 在播放器里是"快进到下一段"，
-          容易被理解成"加速播放"，而这里其实是"让 AI 走一步"。
+          线性图标：三角 + 竖线 = 单步。
+          用「走一步」而不是「快进」语义：这里是让 AI 走一步，不是加速播放。
         -->
-        <button id="ai-step" type="button" class="ghost" title="AI 走一步（空格）">
-          <span aria-hidden="true">⇥</span>
+        <button id="ai-step" type="button" class="ghost icon-btn" title="AI 走一步（空格）">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 5.5v13l9-6.5z" />
+            <path d="M18 5.5v13" />
+          </svg>
+          <span class="sr-only">AI 走一步</span>
         </button>
-        <button id="mute" type="button" class="ghost" aria-pressed="false" title="音效（M）">
-          <span aria-hidden="true">🔊</span>
+
+        <!-- 线性图标：喇叭 = 音效；静音时由 JS 切换到斜杠变体 -->
+        <button id="mute" type="button" class="ghost icon-btn" aria-pressed="false" title="音效（M）">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />
+            <path class="mute-wave" d="M16 9a4 4 0 0 1 0 6" />
+            <path class="mute-slash" d="M16 9.5l5 5M21 9.5l-5 5" />
+          </svg>
+          <span class="sr-only">音效</span>
         </button>
+      </div>
+
+      <!-- 规则弹窗：内容全部是当前真实规则，细节见 main.js 的 RULES_HTML -->
+      <div class="modal" id="rules-modal" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+        <div class="modal-panel">
+          <h2 id="rules-title">规则</h2>
+          <div class="modal-body" id="rules-body"></div>
+          <button id="rules-close" type="button">知道了</button>
+        </div>
       </div>
 
       <div class="session-notice hidden" id="difficulty-notice"></div>
@@ -92,8 +141,20 @@
             <h2 id="overlay-title">游戏结束</h2>
             <p id="overlay-text"></p>
             <div>
-              <button id="overlay-undo" type="button" class="ghost">撤销一步</button>
-              <button id="overlay-restart" type="button">再来一局</button>
+              <button id="overlay-undo" type="button" class="ghost">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 8h11a5 5 0 0 1 0 10H8" />
+                  <path d="M8 4 4 8l4 4" />
+                </svg>
+                撤销一步
+              </button>
+              <button id="overlay-restart" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+                  <path d="M20 4v4h-4" />
+                </svg>
+                再来一局
+              </button>
             </div>
           </div>
         </div>
