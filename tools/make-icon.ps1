@@ -67,9 +67,26 @@ $DigitColor = '#fefcf7' # --text-light, the colour the game uses on that tile
 $RowTop = '20'
 $RowBottom = '48'
 
-# Font size as a fraction of the TILE size. Each row gets half the tile, so
-# this is bounded by the half-tile height rather than the width.
-$FontRatio = 0.42
+# --- Row layout: how tightly the two rows sit together -------------------
+#
+# The two rows share the middle band of the tile; RowBandInset is how much of
+# the tile height is left empty at top and bottom. Smaller inset (0) would fill
+# the whole tile; larger inset pulls the rows in and leaves more orange margin.
+# 0.10 keeps a little margin while making the pair read as one tight block.
+$RowBandInset = 0.10
+
+# Font size as a fraction of the TILE size. With the rows pulled together the
+# font can be a touch larger than before (0.42) and still fit both rows.
+$FontRatio = 0.44
+
+# --- Digit shadow --------------------------------------------------------
+#
+# A soft black drop shadow behind the white digits, offset down-right. Without
+# it the white text sits flat on the orange tile and loses definition at small
+# sizes (16px taskbar icon). Alpha is deliberately low: a hard black outline
+# would look like a sticker rather than the game's flat tile style.
+$ShadowAlpha = 70      # 0..255
+$ShadowOffset = 1.0    # pixels at the 256px canvas; scales with the canvas
 
 function New-RoundedRectPath {
     param([float]$X, [float]$Y, [float]$W, [float]$H, [float]$R)
@@ -104,22 +121,46 @@ function New-IconBitmap {
     $brush.Dispose()
     $path.Dispose()
 
-    # Two equal halves of the tile; one row centred in each.
-    $half = $tile / 2.0
+    # Two rows, pulled together in the middle of the tile.
+    #
+    # Originally each row got its own half of the tile, which made "20" and "48"
+    # sit far apart (the user's note: "上下断开的 20 和 48 大幅压缩行距，让视觉更紧凑").
+    # Now both rows live inside the middle band and the two bands touch:
+    #
+    #     bandHeight = tile * (1 - 2 * RowBandInset) / 2
+    #     top row    centred in [margin + inset, + bandHeight]
+    #     bottom row centred in [margin + inset + bandHeight, ...]
+    #
+    # so the visual gap between the rows is just the font's own leading, and the
+    # tile keeps a little breathing room at top and bottom. Rows touch, so the
+    # same "halves tile exactly, centring is free" property still holds.
+    $bandHeight = [float]($tile * (1.0 - 2.0 * $RowBandInset) / 2.0)
     $fontSize = [float]($tile * $FontRatio)
     $font = New-Object System.Drawing.Font('Segoe UI', $fontSize, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
     $fore = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($DigitColor))
+    $shadow = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb($ShadowAlpha, 0, 0, 0))
 
     $fmt = New-Object System.Drawing.StringFormat
     $fmt.Alignment = [System.Drawing.StringAlignment]::Center
     $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
 
-    $topRect = New-Object System.Drawing.RectangleF($margin, $margin, $tile, $half)
-    $bottomRect = New-Object System.Drawing.RectangleF($margin, ($margin + $half), $tile, $half)
+    $bandTop = [float]($margin + $tile * $RowBandInset)
+    $topRect = New-Object System.Drawing.RectangleF($margin, $bandTop, $tile, $bandHeight)
+    $bottomRect = New-Object System.Drawing.RectangleF($margin, ($bandTop + $bandHeight), $tile, $bandHeight)
+
+    # Shadow first, offset down-right, then the white digits on top. Without it
+    # the white digits sit flat on the orange tile and read poorly at small sizes
+    # (the user asked for "轻微的黑色投影或浮雕效果，使其与橙色背景分离").
+    $shadowTop = New-Object System.Drawing.RectangleF(($margin + $ShadowOffset), ($bandTop + $ShadowOffset), $tile, $bandHeight)
+    $shadowBottom = New-Object System.Drawing.RectangleF(($margin + $ShadowOffset), ($bandTop + $bandHeight + $ShadowOffset), $tile, $bandHeight)
+    $g.DrawString($RowTop, $font, $shadow, $shadowTop, $fmt)
+    $g.DrawString($RowBottom, $font, $shadow, $shadowBottom, $fmt)
+
     $g.DrawString($RowTop, $font, $fore, $topRect, $fmt)
     $g.DrawString($RowBottom, $font, $fore, $bottomRect, $fmt)
 
-    $fmt.Dispose(); $fore.Dispose(); $font.Dispose()
+    # RectangleF is a struct — no Dispose() here (calling it fails the script).
+    $fmt.Dispose(); $shadow.Dispose(); $fore.Dispose(); $font.Dispose()
     $g.Dispose()
     return $bmp
 }

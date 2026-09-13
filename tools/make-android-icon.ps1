@@ -44,6 +44,20 @@ $DigitColor = '#fefcf7'  # --text-light
 $RowTop = '20'
 $RowBottom = '48'
 
+# --- Row layout + shadow: MUST stay in sync with tools/make-icon.ps1 ------
+#
+# Same three knobs as the desktop .ico so both platforms look identical:
+#   RowBandInset = how much tile height stays empty at top/bottom
+#                  (rows are pulled together into the middle band)
+#   FontRatio    = font size as a fraction of the tile
+#   Shadow*      = soft black drop shadow behind the white digits
+# See make-icon.ps1 for why: the user asked to compress the line spacing and
+# to separate the digits from the orange background.
+$RowBandInset = 0.10
+$FontRatio = 0.44
+$ShadowAlpha = 70
+$ShadowOffset = 1.0
+
 # Density buckets: name -> legacy launcher size in px (48dp at that density)
 $Densities = [ordered]@{
   'mdpi'    = 48
@@ -91,23 +105,33 @@ function New-IconBitmap([int]$Size, [double]$Fill, [bool]$WithBoard) {
   $tileBrush = New-Object System.Drawing.SolidBrush($tile)
   $g.FillPath($tileBrush, $tilePath)
 
-  # Two equal halves, each row centred in its own half (same trick as the .ico:
-  # the halves tile the square exactly, so the block is centred by construction).
-  # Font size is a fraction of the TILE size, not of the canvas.
-  $fontSize = [float]($side * 0.42)
+  # Two rows, pulled together in the middle of the tile (same layout as the
+  # desktop .ico — see make-icon.ps1 for the reasoning and the user's request).
+  $bandHeight = [float]($side * (1.0 - 2.0 * $RowBandInset) / 2.0)
+  $fontSize = [float]($side * $FontRatio)
   $font = New-Object System.Drawing.Font('Segoe UI', $fontSize, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
   $fore = New-Object System.Drawing.SolidBrush($digit)
+  $shadow = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb($ShadowAlpha, 0, 0, 0))
   $fmt = New-Object System.Drawing.StringFormat
   $fmt.Alignment = [System.Drawing.StringAlignment]::Center
   $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
 
-  $half = [float]($side / 2)
-  $topRect = New-Object System.Drawing.RectangleF($origin, $origin, $side, $half)
-  $bottomRect = New-Object System.Drawing.RectangleF($origin, [float]($origin + $half), $side, $half)
+  $bandTop = [float]($origin + $side * $RowBandInset)
+  # Shadow offset scales with the canvas so it reads the same at every density
+  $shadowShift = [float]($side * $ShadowOffset / 256.0)
+
+  $topRect = New-Object System.Drawing.RectangleF($origin, $bandTop, $side, $bandHeight)
+  $bottomRect = New-Object System.Drawing.RectangleF($origin, ($bandTop + $bandHeight), $side, $bandHeight)
+  $shadowTop = New-Object System.Drawing.RectangleF(($origin + $shadowShift), ($bandTop + $shadowShift), $side, $bandHeight)
+  $shadowBottom = New-Object System.Drawing.RectangleF(($origin + $shadowShift), ($bandTop + $bandHeight + $shadowShift), $side, $bandHeight)
+
+  $g.DrawString($RowTop, $font, $shadow, $shadowTop, $fmt)
+  $g.DrawString($RowBottom, $font, $shadow, $shadowBottom, $fmt)
   $g.DrawString($RowTop, $font, $fore, $topRect, $fmt)
   $g.DrawString($RowBottom, $font, $fore, $bottomRect, $fmt)
 
-  $fmt.Dispose(); $fore.Dispose(); $font.Dispose()
+  # RectangleF is a struct — no Dispose() (calling it throws "MethodNotFound").
+  $fmt.Dispose(); $shadow.Dispose(); $fore.Dispose(); $font.Dispose()
   $tileBrush.Dispose(); $tilePath.Dispose(); $g.Dispose()
   return $bmp
 }
