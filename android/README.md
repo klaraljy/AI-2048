@@ -1,8 +1,7 @@
 # Android App
 
-> **状态：可产出可安装的 debug APK（约 2.3 MB）。** WebView 套 `web/`，
-> 前端资源打包进 APK，**完全离线可玩**。引擎（走子 AI）**未编进 APK** ——
-> 见下面「AI 在手机上的现状」。
+> **状态：可产出可安装的 debug APK（约 3.0 MB）。** WebView 套 `web/`，
+> 前端资源打包进 APK，**C++ 引擎经 JNI 一并编入**，完全离线可玩。
 
 ## 定位
 
@@ -99,32 +98,54 @@ Remove-Item android\app\src\main\assets\web\README.md
 升级 AGP 会触发几百 MB 的依赖下载，而本项目对版本没有特殊要求 ——
 要升之前先确认 `gradle-home\caches` 里有对应版本。
 
-## AI 在手机上的现状
-
-**APK 里没有引擎。** 前端在连不上引擎时会自己降级到内置的本地 AI，
-并在界面上显示提示条，所以玩是能玩的，只是 AI 强度是「降级档」。
-
-要把引擎编进去，需要 **NDK + JNI 薄封装**：
+## AI：C++ 引擎已经编进 APK（JNI）
 
 ```
 engine/  (静态库 ai2048_core)
-      └──► android/   JNI 薄封装 → Kotlin / Java
+      └──► android/app/src/main/cpp/jni_bridge.cpp   JNI 薄封装
+                └──► NativeEngine.java → window.AI2048Native
+                        └──► web/js/transport.js 的 NativeTransport
 ```
+
+前端按 **原生 > WebSocket > 本地 JS** 的顺序挑后端；探测不到原生就降级，
+所以某个 ABI 缺 `.so` 时页面仍然能玩。
 
 架构约束（**不得违反**）：
 - 引擎是**可移植静态库**，Android 只是它的消费者之一。
 - **不得**为 Android 复制第二套规则或第二套 AI —— 那正是参考原型
   出现「规则漂移」的原因。要快就优化那一份实现。
-- 引擎核心不得依赖网络、文件系统或线程模型（`ai2048_core` 已满足，
-  见 `engine/CMakeLists.txt` 的库分层说明）。
-- **手机端 AI 强度用「时间预算」而不是「固定深度」**，这样同一份代码
-  在手机上自然降级。UI 的「快 / 均衡 / 强」三档本质是给不同的 `timeBudgetMs`。
-  **验收要求：均衡档下每步不超过 200ms，且不引起可感知的机身发热。**
+- JNI 那层**只做参数翻译**，不含任何算法；语义照抄
+  `engine/src/net/protocol.cpp`（同样的 SearchConfig 字段、同样在一局内跨步复用置换表）。
+- 手机端 AI 强度用**时间预算**而不是固定深度。
+
+### 一致性自检（改了引擎或 JNI 就跑一次）
+
+```powershell
+# 桌面的参考结果
+engine\build\ai2048-cli.exe selftest --depth 8 --difficulty hard
+# 真机上：window.AI2048Native.selfTest(8, "hard")  应当得到同一个串
+```
+
+两边跑**同一组写死的局面**（见 `nativeSelfTest` 与 `RunSelfTest`，改一处要改另一处），
+结果必须逐条一致。这条专门抓"参数悄悄传错"：棋盘编码顺序、深度单位、难度名、
+`last_move` —— 那类错不崩溃，只让 AI 变弱，而手机上分辨不出来。
+
+### 构建环境上的三个坑（都实测踩过）
+
+1. **必须钉住 `ndkVersion`**（`app/build.gradle`）。不写时 AGP 用它自己的默认版本
+   （27.0.12077973）并去"安装"——实测触发约 1 GB 下载，而本机已经装了 29。
+2. **CMake 要用 `android/local.properties` 里的 `cmake.dir` 指到本机安装**。
+   AGP 默认去 Android SDK 的 `cmake/` 目录找，找不到就联网下载；本机网络下这一步
+   **卡住不动**（`.temp` 几分钟只有 0.5 MB）。指到 `D:\Codex Tools\CMake\cmake-3.31.6-*`
+   就正常了。这个文件是机器相关的，已被 gitignore。
+3. **`-DAI2048_ENGINE_DIR` 用 `rootProject.projectDir` 推导，不要手数 `../` 层数**。
+   我数错过两次（得到 `E:\DeepSeekProjects\engine` 和 `E:\engine`），
+   而 CMake 只会说"目录不存在"，不会告诉你差了几层。
 
 ### NDK
 
-**已装好** `ndk;29.0.14206865`（`D:\Codex Tools\Android\ndk\29.0.14206865`）。
-**只有 JNI 那条路线才需要它** —— 当前的 WebView 方案是纯 Java，不依赖 NDK。
+**已装** `ndk;29.0.14206865`（`D:\Codex Tools\Android\ndk\29.0.14206865`），
+`app/build.gradle` 里钉的就是它。
 
 ## 环境
 

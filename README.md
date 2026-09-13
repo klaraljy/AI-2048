@@ -167,16 +167,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync-android-assets.ps
 **忘了同步的后果是：桌面版改了、APK 里还是旧的，而且没有任何报错。**
 （这条踩过：APK 里的 `style.css` 曾停在 11869 字节，而 `web/` 已经 33 KB。）
 
-### AI 在手机上的现状：**引擎没有编进 APK**
+### AI 在手机上：**C++ 引擎已编进 APK**
 
-APK 里只有前端。前端连不上引擎时会自动降级到**内置的 JS 本地 AI**
-（1 层贪心，权重是旧的），并显示提示条 —— 所以玩是能玩的，但 AI 明显弱一档。
-
-要把 C++ 引擎编进去，路线是 **NDK + JNI 薄封装**（NDK 29.0.14206865 已装好）：
+手机起不了本地服务器，所以走的是 **NDK + JNI 薄封装**：引擎编成 `.so`，
+经 JNI 注入成 `window.AI2048Native`，前端探测到就走原生，探测不到才降级到内置的
+JS 贪心 AI —— 于是**手机与桌面跑的是同一份引擎**（同一批源码、同一套权重）。
 
 ```
 engine/  (静态库 ai2048_core，不依赖网络/文件系统/线程模型)
-      └──► android/   JNI 薄封装 → Java/Kotlin
+      └──► android/app/src/main/cpp/   JNI 薄封装（只做参数翻译，不含算法）
+                └──► window.AI2048Native ──► web/js/transport.js 的 NativeTransport
 ```
 
 架构约束（不得违反）：
@@ -184,7 +184,13 @@ engine/  (静态库 ai2048_core，不依赖网络/文件系统/线程模型)
 - **不得**为 Android 复制第二套规则或第二套 AI —— 那正是参考原型出现
   「规则漂移」的原因；
 - 手机端 AI 强度用**时间预算**而不是固定深度，让同一份代码在手机上自然降级。
-  **验收要求：均衡档下每步不超过 200ms，且不引起可感知的机身发热。**
+
+**验收已做到**：`ai2048-cli selftest` 与 JNI 侧 `nativeSelfTest` 跑同一组固定局面，
+方向必须逐条一致（桌面参考结果 `down,left,right`）。这条专门用来抓"参数悄悄传错"
+那类问题 —— 不崩溃，只让 AI 变弱，手机上看不出来。
+
+⚠️ **尚未做真机验证**：只验证到「静态结构 + 符号导出 + 桌面同源结果」，
+真机上的实际每步耗时需要装到手机上量。
 
 详见 `android/README.md`。
 
