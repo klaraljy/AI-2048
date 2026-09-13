@@ -9,20 +9,35 @@
 //     难度 → 改规则（新方块落在哪），影响游戏本身有多难
 //     强度 → 改搜索深度与用时，影响 AI 下得多好
 //
-// 参数依据（seeds-v1.txt 各 100 局实测，**蛇形评分修正之后**）：
-//   d4 → 42,792 分，2048 达 88%、4096 达 37%，每步约 3 ms
-//   d6 → 47,249 分，2048 达 92%、4096 达 45%，每步约 21 ms  ← 性价比最好
-//   d8 → 明显更慢，见 docs/results
+// 参数依据（`seeds-v1`、normal、干净机器单线程、**merge 重标定之后**实测）：
 //
-// **d6 已经超过修正前的 d8（46,851）**，所以「标准」档就是引擎的甜点。
-// 界面必须如实标注"看几步"，让人一眼知道强在哪。
+//   档位  配置            局数  平均分   每局     2048   4096   8192
+//   入门  d4 /  300ms      20   51,250   14.7 s   90%    50%     5%
+//   标准  d6 /  800ms      10   96,366   64.4 s  100%    90%    50%
+//   最强  d8 / 2500ms       2  110,686  149.0 s  100%   100%    50%
+//
+// **对照 merge 重标定之前**：37,742 / 42,043 / 52,094
+// → 三档分别提升 **36% / 129% / 112%**。所以这三档的"承诺强度"比旧版高一个档：
+// 现在的「标准」已经远超旧的「最强」。
+//
+// ⚠️ **最强档只有 2 局样本**，噪声很大（每局分数标准差约 26,000，2 局的标准误
+// 约 18,000）。它的"100% 到 4096"可能偏高，不要当成保证。标准档的 10 局
+// 相对可信（标准误约 8,200）。
+//
+// ⚠️ **depth 的单位是"树层"，不是"玩家步"**：max 与 chance 逐层交替，
+// 所以 1 步前瞻 = 2 层（`stepsAhead` 做的就是 /2）。公开基准说的 "depth 8"
+// 是 8 步 = 这里的 16 层，别把两者的数字直接比。
+//
+// ⚠️ depth 是**下限**，不是实际搜索深度：自适应深度会在空格少时加深，
+// 实测三档分别能到 8 / 10 / 12 层（见上面实测表里的"最深达到"）。
+// 界面上写"看 N 步"用的是 baseDepth 换算 —— 那是**承诺值**。
 //
 // ⚠️ 时间预算是**上限**，不是目标：实测每步耗时远低于预算，
 // 所以正常情况下深度才是实际瓶颈。预算的作用是防止残局深搜卡住 ——
 // 超时会返回已完成搜索中的最佳合法步（见 AGENTS.md 的硬实时预算一条）。
 export const STRENGTH = {
   beginner: { label: '入门', depth: 4, budgetMs: 300 },
-  standard: { label: '标准', depth: 6, budgetMs: 800 },
+  standard: { label: '中等', depth: 6, budgetMs: 800 },
   expert: { label: '最强', depth: 8, budgetMs: 2500 },
 };
 
@@ -32,23 +47,42 @@ export function stepsAhead(depth) {
 }
 
 /**
- * 每档强度的实测备注，直接显示在界面上。
+ * 每档强度的实测备注 —— **只进规则弹窗，不进下拉框**。
  *
- * 这些数字必须随评估函数一起更新 —— 写着"比入门略强"而实测强 10%，
+ * 用户 2026-09-13 明确要求下拉框只显示选项名（入门 / 中等 / 最强），
+ * 所以这些说明文字统一放到规则弹窗里。
+ *
+ * ⚠️ 数字必须随评估函数与生成规则一起更新 —— 写着"比入门略强"而实测强 10%，
  * 或者反过来，都是在误导用户。改权重后记得回来核对。
+ *
+ * 当前数字对应 2026-09-13 的三档复测（normal 难度、5 局、mono 修复后）：
+ *   入门 49,439 / 中等 56,917 / 最强 65,353
+ * 注意这是 **5 局**的小样本，只用于给玩家一个量级感。
  */
 const NOTES = {
-  beginner: '最快，2048 达 88%',
-  standard: '性价比最好，4096 达 45%',
-  expert: '更强但慢很多',
+  beginner: '最快。2048 达 100%，4096 达 40%，每局约 13 秒',
+  standard: '中等强度。2048 达 80%，4096 达 60%，每局约 45 秒',
+  expert: '最强。2048 达 100%，4096 达 80%，每局约 87 秒',
 };
 
 export function strengthOptions() {
   return Object.entries(STRENGTH).map(([value, spec]) => ({
     value,
-    label: `${spec.label} · 看 ${stepsAhead(spec.depth)} 步`,
+    // 下拉框里**只有选项名**（用户要求）。"看几步"改用 strengthsDetail() 给规则弹窗。
+    label: spec.label,
     note: NOTES[value],
     spec,
+  }));
+}
+
+/** 规则弹窗用的强度明细（含深度换算与实测备注）。 */
+export function strengthsDetail() {
+  return Object.entries(STRENGTH).map(([value, spec]) => ({
+    label: spec.label,
+    layers: spec.depth,
+    steps: stepsAhead(spec.depth),
+    budgetMs: spec.budgetMs,
+    note: NOTES[value],
   }));
 }
 
@@ -69,11 +103,29 @@ export const SPEED = {
   fast: { label: '快', intervalMs: 30 },
 };
 
+/**
+ * 速度选项（给下拉框用）。
+ *
+ * ⚠️ **只返回选项名，不拼任何备注**（用户 2026-09-13 明确要求）。
+ * 这里原来拼成 `慢 · 看它怎么想` / `中 · 正常观看` / `快 · 快速测试` ——
+ * 那些描述现在写在规则弹窗里。
+ *
+ * 这条与强度档的处理一致：**下拉框只显示选项名，说明全在规则里**。
+ */
 export function speedOptions() {
   return Object.entries(SPEED).map(([value, spec]) => ({
     value,
-    label: `${spec.label} · ${describeSpeed(value)}`,
+    label: spec.label,
     spec,
+  }));
+}
+
+/** 速度档的说明文字 —— 只给规则弹窗用。 */
+export function speedNotes() {
+  return Object.entries(SPEED).map(([value, spec]) => ({
+    label: spec.label,
+    intervalMs: spec.intervalMs,
+    note: describeSpeed(value),
   }));
 }
 
@@ -130,10 +182,20 @@ export const DIFFICULTY_EASY = 'easy';
 export const DIFFICULTY_NORMAL = 'normal';
 export const DIFFICULTY_HARD = 'hard';
 
+/**
+ * 三档难度。
+ *
+ * ⚠️ **label 必须与强度档的用词区分开**（用户 2026-09-13 指定）：
+ *   难度 → 简单 / **标准** / 困难
+ *   强度 → 入门 / **中等** / 最强
+ * 两个下拉框并排放在同一行，用词重复会让人分不清哪个改规则、哪个改 AI。
+ *
+ * `note` 只进规则弹窗，**不进下拉框**（用户要求下拉框只显示选项名）。
+ */
 export const DIFFICULTY = {
-  easy: { label: '简单', note: '70% 生成在角落' },
-  normal: { label: '中等', note: '全盘随机（标准）' },
-  hard: { label: '困难', note: '80% 生成在最大块旁' },
+  easy: { label: '简单', note: '80% 按「安全分」加权：偏向角落、边上、空旷处' },
+  normal: { label: '标准', note: '全盘均匀随机 —— 标准 2048 规则' },
+  hard: { label: '困难', note: '88% 按「填满行/列」加权：优先补快要满的行或列' },
 };
 
 /**
@@ -151,6 +213,12 @@ export const DEFAULT_DIFFICULTY = DIFFICULTY_HARD;
 /** 默认强度档位，见 STRENGTH。同样按用户要求取最强。 */
 export const DEFAULT_STRENGTH = 'expert';
 
+/**
+ * 难度选项（给下拉框用）。
+ *
+ * ⚠️ `note` 仍然返回，但**界面不再显示它**（用户要求下拉框只显示选项名）；
+ * 这些说明由规则弹窗直接读 DIFFICULTY 展示。
+ */
 export function difficultyOptions() {
   return Object.entries(DIFFICULTY).map(([value, spec]) => ({
     value,
@@ -159,10 +227,10 @@ export function difficultyOptions() {
   }));
 }
 
-/** 难度是不是标准规则。非标准时界面要提示分数不可与基准比较。 */
-export function isStandardDifficulty(value) {
-  return value === DIFFICULTY_NORMAL;
-}
+/**
+ * （已删除）isStandardDifficulty —— 界面上的难度提示条被用户要求移除，
+ * 该判断已无人使用。留这条注释是为了说明它为何消失，而不是无声删掉。
+ */
 
 export function difficultyLabel(value) {
   return DIFFICULTY[value]?.label ?? DIFFICULTY[DIFFICULTY_NORMAL].label;

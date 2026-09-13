@@ -1,7 +1,12 @@
 # ---- 构建产物 ----
-# build*/ 而不是 build/ ：本项目用 engine\build（普通）与 engine\build-tests（含 GoogleTest）
-# 两个构建目录，只写 build/ 会漏掉后者，GoogleTest 的整个检出会被提交进去。
-build*/
+# ⚠️ 这里**不能写 `build*/`**。`*` 会连 `android/app/build/` 一起吃掉，
+# 于是放行 debug APK 的规则全部失效（negation 救不回来：目录本身已被排除，
+# git 根本不会往里看）。实测踩过：`git check-ignore` 指向的就是这一行，
+# 而不是下面 Android 段里的 `android/app/build/`。
+# 所以改成逐个列出构建目录 —— 只有 engine 的两个需要（build 与 build-tests）。
+engine/build/
+engine/build-tests/
+engine/build-dev/
 out/
 cmake-build-*/
 CMakeCache.txt
@@ -63,10 +68,27 @@ engine/models/*
 android/.gradle/
 android/local.properties
 android/build/
-android/app/build/
+# Android 构建目录：**逐层放行到 debug APK**（理由见下面那段说明）。
+# 不能直接写 `android/app/build/` 就完事 —— 那样 APK 也被挡住了。
+android/app/build/*
+!android/app/build/outputs/
+android/app/build/outputs/*
+!android/app/build/outputs/apk/
+android/app/build/outputs/apk/*
+!android/app/build/outputs/apk/debug/
 android/.idea/
 android/captures/
-*.apk
+# ⚠️ **debug APK 要提交，不许再写 `*.apk` 这一条**（用户 2026-09-13 明确要求）。
+# 理由：APK 是这个项目**可直接使用的交付物** —— 提交进仓库，clone 下来就能装，
+# 不需要先装 Android SDK / Gradle / JDK 再自己构建。
+#
+# 只放行 **debug** 包；release 的签名密钥（*.keystore / *.jks）绝对不能进仓库，
+# 其余中间产物仍然忽略（见上面 android/app/build/* 的逐层放行）。
+#
+# 代价（知情接受）：`app-debug.apk` 是**二进制**，重打一次就是 2 MB 的提交，
+# 而且 git 看不出内容差异。所以改完 `web/` 重新打包时，
+# 请把「同步资源 + 重新打包 + 提交 APK」当成**同一次提交**做完，
+# 不要把 APK 的更新零零散散混进普通代码提交里。
 *.aab
 *.keystore
 *.jks

@@ -1,6 +1,8 @@
 # Android App
 
-> **状态：空。** 尚未开始。前置条件是先装 Android NDK（见下）。
+> **状态：可产出可安装的 debug APK（约 2.3 MB）。** WebView 套 `web/`，
+> 前端资源打包进 APK，**完全离线可玩**。引擎（走子 AI）**未编进 APK** ——
+> 见下面「AI 在手机上的现状」。
 
 ## 定位
 
@@ -55,14 +57,23 @@ $gradle = "D:\Codex Tools\gradle-home\wrapper\dists\gradle-8.11.1-all\2qik7nd48s
 
 ### ⚠️ 同步前端资源（改完 `web/` 必做）
 
-APK 里用的是 `android/app/src/main/assets/web/`，它是 `web/` 的**副本**：
+APK 里用的是 `android/app/src/main/assets/web/`，它是 `web/` 的**副本**。
+用脚本同步并校验（推荐）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync-android-assets.ps1
+```
+
+脚本会复制 + **逐个文件比对大小**，不一致就报错退出。手敲的话：
 
 ```powershell
 Copy-Item web\* -Destination android\app\src\main\assets\web -Recurse -Force
+Remove-Item android\app\src\main\assets\web\README.md
 ```
 
 **忘了同步的后果是：桌面版改了、APK 里还是旧的，而且没有任何报错。**
-（`web/README.md` 不用复制，那是开发文档。）
+（实测踩到过：APK 里的 `style.css` 停在 11869 字节，而 `web/` 已经 33 KB，
+打出来的包装的还是几轮之前的界面。`web/README.md` 是开发文档，不进 APK。）
 
 ### 构建踩过的两个坑（都已修，记下来省得重踩）
 
@@ -112,8 +123,8 @@ engine/  (静态库 ai2048_core)
 
 ### NDK
 
-正在装 `ndk;29.0.14206865`（约 1GB，后台）。**只有上面那条 JNI 路线才需要它** ——
-当前的 WebView 方案是纯 Java，不依赖 NDK。
+**已装好** `ndk;29.0.14206865`（`D:\Codex Tools\Android\ndk\29.0.14206865`）。
+**只有 JNI 那条路线才需要它** —— 当前的 WebView 方案是纯 Java，不依赖 NDK。
 
 ## 环境
 

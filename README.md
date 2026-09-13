@@ -3,11 +3,12 @@
 2048 的 AI 实验室。C++ 引擎在固定种子集上跑批，用可复现的分数证明某个算法改动是不是真的更强；
 附带一个动画和音效到位、能在 Windows 桌面和 Android 手机上玩的前端。
 
-> **状态：里程碑 1 完成**。C++ 规则引擎可用且确定性已验证
-> （1000 局 `selfcheck` 逐字节一致，43 个单元测试全绿，规则与 Cirulli 原始算法
-> 在全部 65536 种行状态上逐行对拍一致）。
-> **AI 还没有**：`selfcheck` / `bench` 用的是刻意平凡的走子策略，
-> 平均分 2309 是引擎基线而不是 AI 成绩。里程碑见 `docs/brief.md`。
+> **状态：AI 与前端都已可用**（2026-09-13）。
+> 引擎：C++20，规则与 Cirulli 原始算法在全部 65536 种行状态上逐行对拍一致，
+> 1000 局 `selfcheck` 逐字节一致，**116 个 C++ 单元测试全绿**。
+> AI：expectimax（max + chance）+ 手写评估函数 + 置换表 + 迭代加深 + 自适应深度。
+> 前端：零依赖原生 HTML/CSS/JS，**11 个测试套件全绿**（含与 C++ 引擎逐位对拍）。
+> Android：可安装的 debug APK（WebView 套 `web/`，离线可玩）。
 
 ## 它解决什么问题
 
@@ -20,6 +21,10 @@
 2. **对拍基线** —— 保留一个已知强度的 JS 原型作为基线，C++ 版每次大改都要与它同种子对拍。
 3. **回归检测** —— 分数掉了要显式发现并记录，而不是当作噪声忽略。
 
+本机每局分数的标准差约 15,000，100 局均值标准误约 1,500 —— 这意味着 3~4% 的差异
+用两次独立跑批比大小**根本分辨不出来**。所以引擎带一个 `compare` 子命令：
+A/B 跑同一批种子，报逐局差值的均值/标准差/标准误/配对 t 检验/符号检验 p 值。
+
 ## 目标强度
 
 参考公开基准（1000 局，标准规则）：
@@ -31,6 +36,24 @@
 
 本项目的目标定在 **稳定 depth 6 一线（约 600k+ 平均分）**，而不是 depth 8 ——
 因为在只有 CPU 的轻薄本上，depth 8 一局要 20 分钟以上，depth 4–6 才是性价比拐点。
+
+### 当前实测（`seeds-v1`、标准难度、单线程）
+
+界面上三档 AI 强度**实际达到的成绩**（5 局小样本，只用于给玩家一个量级感）：
+
+| 档位 | 配置 | 平均分 |
+|---|---|---|
+| 入门 | depth 4 / 300 ms | 49,439 |
+| 中等 | depth 6 / 800 ms | 56,917 |
+| 最强 | depth 8 / 2500 ms | 65,353 |
+
+难度默认**困难**（改的是新方块落点分布，**不是标准 2048**，所以分数不与公开基准可比）。
+困难档下最强档约 59,712。
+
+> ⚠️ **已经查明的天花板**：chance 节点的分支因子是 `min(空格数, 10) × 2`，
+> 有效搜索深度被天然截断在 3~4 步，与 `base_depth` 无关。
+> 实测把 `max_depth` 从 8 提到 14，10 局对拍**逐局完全相同** —— 加成从未生效。
+> 所以再堆深度没有意义，瓶颈是分支因子。详见 `AGENTS.md`。
 
 ## 技术选型
 
@@ -93,12 +116,12 @@ $env:PATH = "D:\Codex Tools\CMake\cmake-3.31.6-windows-x86_64\bin;D:\Codex Tools
 cmake -S engine -B engine\build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build engine\build
 
-# 单元测试（98 个）
+# 单元测试（116 个）
 cmake -S engine -B engine\build-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DAI2048_BUILD_TESTS=ON
 cmake --build engine\build-tests
 ctest --test-dir engine\build-tests
 
-# 前端与端到端测试（10 个套件）
+# 前端与端到端测试（11 个套件）
 node tests\run-all.mjs
 
 # 引擎自检：同种子同结果
@@ -119,7 +142,8 @@ engine\build\ai2048-server.exe --port 8765
 
 ## 安卓
 
-Android 侧已能产出可安装的 debug APK（WebView 套 `web/`，离线可玩）：
+Android 侧产出可安装的 debug APK：**WebView 套 `web/`**，前端资源打包进 APK，
+**完全离线可玩**。
 
 ```powershell
 $env:GRADLE_USER_HOME = "D:\Codex Tools\gradle-home"
@@ -128,8 +152,41 @@ $env:ANDROID_HOME     = "D:\Codex Tools\Android"
 gradle -p android assembleDebug
 ```
 
-产物在 `android\app\build\outputs\apk\debug\app-debug.apk`。
-改完 `web/` 必须同步到 `android/app/src/main/assets/web/`（命令见 `android/README.md`）。
+产物在 `android\app\build\outputs\apk\debug\app-debug.apk`（约 2.3 MB）。
+
+### ⚠️ 改完 `web/` 必须同步资源，否则 APK 里还是旧界面
+
+APK 用的是 `android/app/src/main/assets/web/`，它是 `web/` 的**副本**：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync-android-assets.ps1
+```
+
+脚本会复制并**逐个文件比对大小**，不一致就报错退出。
+
+**忘了同步的后果是：桌面版改了、APK 里还是旧的，而且没有任何报错。**
+（这条踩过：APK 里的 `style.css` 曾停在 11869 字节，而 `web/` 已经 33 KB。）
+
+### AI 在手机上的现状：**引擎没有编进 APK**
+
+APK 里只有前端。前端连不上引擎时会自动降级到**内置的 JS 本地 AI**
+（1 层贪心，权重是旧的），并显示提示条 —— 所以玩是能玩的，但 AI 明显弱一档。
+
+要把 C++ 引擎编进去，路线是 **NDK + JNI 薄封装**（NDK 29.0.14206865 已装好）：
+
+```
+engine/  (静态库 ai2048_core，不依赖网络/文件系统/线程模型)
+      └──► android/   JNI 薄封装 → Java/Kotlin
+```
+
+架构约束（不得违反）：
+- 引擎是**可移植静态库**，Android 只是它的消费者之一；
+- **不得**为 Android 复制第二套规则或第二套 AI —— 那正是参考原型出现
+  「规则漂移」的原因；
+- 手机端 AI 强度用**时间预算**而不是固定深度，让同一份代码在手机上自然降级。
+  **验收要求：均衡档下每步不超过 200ms，且不引起可感知的机身发热。**
+
+详见 `android/README.md`。
 
 ## 开发环境
 
@@ -139,11 +196,16 @@ gradle -p android assembleDebug
 | CMake | 3.31.6 | ✅ 实测通过（不在 PATH） |
 | Ninja | — | ✅ 实测通过 |
 | clang-format | 18.1.8 | ✅ 实测通过（不在 PATH） |
-| GoogleTest | v1.17.0 | ✅ 2/2 测试通过 |
-| Android SDK / JDK | 17 / 21 | ✅ |
-| Android NDK | — | ❌ 尚未安装（移动端前置条件） |
+| GoogleTest | v1.17.0 | ✅ 116 个测试全绿 |
+| Android SDK / JDK | 35 / 17 / 21 | ✅ APK 可构建 |
+| Android NDK | 29.0.14206865 | ✅ 已装（JNI 路线可用，尚未接线） |
 
 ## 未确定的事项
 
-见 `AGENTS.md` 末尾「待确认事项」。当前待定：Android UI 方案（WebView vs 原生）、
-阶段二网络规模、音效来源、是否做暗色模式、许可证类型。
+见 `AGENTS.md` 末尾「待确认事项」。当前待定：
+
+- **手机端 AI**：APK 目前只有前端 + JS 降级 AI；要不要走 NDK + JNI 把 C++ 引擎编进去
+  （NDK 已装好，路线与约束见 `android/README.md`）；
+- **Android UI 方案**：当前是 WebView 套 `web/`，要不要换原生 Kotlin + Compose
+  （手感更好，但动画要写两遍，且会产生两套需要同步维护的界面）；
+- 阶段二网络规模、音效来源、是否做暗色模式、许可证类型。

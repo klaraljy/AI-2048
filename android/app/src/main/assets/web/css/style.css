@@ -29,6 +29,29 @@
   --accent: #52bdab;
   --radius: 8px;
   --gap: 12px;
+  /* 棋盘边长 —— **控件行、提示行、棋盘共用这一个数**。
+     ⚠️ 这三个元素原来各自写 `width: min(100%, 452px)`：.app 宽 560px，
+     所以它们都变成 452px 并从 .app 左边缘排起；而棋盘外面套了 .board-row
+     的居中 flex（两侧烟花轨道占 200px 时棋盘被挤到右边），于是棋盘比控件
+     行**偏右 54px**。
+     现在统一用 `max-width: var(--board-size)` + `margin-inline: auto`：
+     与 .app 内边缘对齐（也就是与棋盘对齐），将来改棋盘大小不会再错位。 */
+  --board-size: 452px;
+  /* 标题里"2"的字形左边自带多少留白（像素）。
+     定义：**字形墨迹左边界 − 文本盒左边界**，实测约 3px。
+     ⚠️ 不要用"元素宽度 − 文字宽度"去算它（202 − 154 = 48）：那个差里混进了
+     右边留白和字距，照它做会把整个标题往左推 45px，看上去更偏。我第一次就
+     是这么算错的。
+     换字体或改字号（--title-font-size）后要重量：_tmp 的 measure-bearing.mjs。 */
+  --title-bearing: 3px;
+  --title-font-size: 64px;
+  /* 棋盘两侧烟花轨道的宽度上限（.fx 的 max-width）。
+     ⚠️ 这个变量**必须存在**：我改注释时误删过一次它的定义，于是
+     `.fx { max-width: var(--fx-track) }` 里的 var() 解析失败，
+     **整条 max-width 在计算值阶段作废、回退成 `none`**，canvas 就按
+     width 属性（400px）撑开，页面多出 180px 横向滚动。
+     记住：用 var() 的声明，变量没定义 ≠ 忽略这一句，而是整条声明失效。 */
+  --fx-track: 100px;
 }
 
 * {
@@ -60,28 +83,56 @@ body {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
+  /* 与棋盘**同一套居中规则**：同样的 max-width + margin-inline:auto。
+     这样标题的左边界由浏览器算出来，与棋盘严格一致 ——
+     不要去手算"棋盘被两侧烟花轨道挤进了多少"：那个偏移量随视口变化
+     （实测 900px 视口下 54px、560px 下 38px、500px 下 8px、≤420px 下 0），
+     任何写死的常量都会在别的宽度上错位。 */
+  width: 100%;
+  max-width: var(--board-size);
+  margin-inline: auto;
 }
 
 .title {
   margin: 0;
-  font-size: 46px;
+  /* 用户指定 64px（见 :root 的 --title-font-size） */
+  font-size: var(--title-font-size);
   font-weight: 800;
   letter-spacing: -1px;
   line-height: 1;
   color: var(--text-light);
+  /* 让"2048"里那个 **2 的墨迹**贴着棋盘左边界。
+     标题元素（.topbar 的左边）已经与棋盘左对齐，剩下的只是字体给"2"留的
+     那 3px 字面留白 —— 用户要的是"2 对齐棋盘左边"，所以把这 3px 抵消掉。
+     用 margin 而不是负 padding：负 padding 在部分浏览器会被忽略。 */
+  margin-left: calc(-1 * var(--title-bearing));
 }
 
 /* 两个分数框靠在一起、整体偏中间 */
 .scores {
   display: flex;
+  /* ⚠️ 必须显式 flex-start：默认 stretch 会把两个框拉到**同高**，
+     而那个高度由最高的那个（或祖先）决定 —— 于是"框比内容高 5px"、
+     改内边距和字号都不见效。用户报"分数框明显太高"时我卡在这里很久。 */
+  align-items: flex-start;
   gap: 10px;
   margin-right: 8%;
 }
 
 .score-box {
   min-width: 108px;
-  /* 下内边距给足：数字滚动的容器有固定高度，padding 不够时底部会被裁 */
-  padding: 7px 14px 11px;
+  /* 高度：用户要求"矮一点，不要比标题还高"。原来 69px（标题 46px，高出 23px）。
+     69 的来源是三处**空白**，不是字号：
+       上内边距 7 + 下内边距 11（不对称 → 内容整体偏上）
+       + 标签行高 14 + 滚轮区 36（数字行高只有 31.2，底下空 4.8）
+     现在逐项压到实测最小值，**数字字号 24px 与标签字号 11px 都不动**：
+       内边距 4（上下对称，内容自然上下居中）
+       + 标签行高 14（实测 11px 中文的文本高度就是 14px，压到 12 会裁字）
+       + 滚轮区 31（= 数字行高 31.2 取整）
+       = 53px。
+     53 / 46 = 比标题高 7px（原来高 23px）。
+     这些都是**浏览器实测值**，不是估算 —— 见 _tmp 的 probe-label.mjs。 */
+  padding: 4px 14px;
   border-radius: var(--radius);
   background: var(--panel);
   color: var(--panel-text);
@@ -92,12 +143,17 @@ body {
 .score-label {
   display: block;
   font-size: 11px;
+  /* 14px = 11px 中文的实测文本高度。压到 12px 时文字会溢出 2px 被裁掉，
+     所以这里不能再小；要再矮只能减内边距（已经只剩 4px）。 */
+  line-height: 14px;
   letter-spacing: 0.08em;
   opacity: 0.9;
   white-space: nowrap;
 }
 
 /* 皇冠只出现在"所有时间"上 */
+/* 皇冠：文字符号 ♛（不是 emoji，各平台字形略有差异但语义一致）。
+   金色是"历史最高分"的标识，保留。 */
 .crown {
   color: #f5c451;
   margin-right: 1px;
@@ -112,12 +168,15 @@ body {
 }
 
 /* 滚轮容器：数字在其中滚动，超出部分裁掉。
-   高度按数字的实际行高给足（24px × 1.3 ≈ 31.2），留 36px —— 之前写成
-   1.35em 是按父级 16px 算的（只有 21.6px），数字底部被裁掉一截。 */
+   高度必须**刚好装下数字行高**：24px × 1.3 = 31.2px，写小了数字底部会被裁。
+   ⚠️ 这个数改过两次教训 —— 一次是写成 1.35em（按父级 16px 算，只有 21.6px）
+   把数字裁了；这次是从 36px 收到 31px（用户嫌框太高），同样要盯住裁切。
+   31 比 31.2 只小 0.2px，靠数字自身的 line box 兜住，实测不裁
+   （见 _tmp 的 ui-check 量到的 scrollHeight vs clientHeight）。 */
 .score-roll {
   position: relative;
   overflow: hidden;
-  height: 36px;
+  height: 31px;
 }
 
 /* 滚出画面的旧数字：绝对定位叠在同一位置，滚完即删 */
@@ -152,65 +211,382 @@ body {
   animation: score-pop 300ms ease-out;
 }
 
-/* ------------------------------------------------------------- 控件（单行） */
+/* ------------------------------------------------------- 控件（两行，用户指定） */
 
+/* 第一行：难度 / AI 强度 / AI 速度 + 规则按钮。
+   ⚠️ **不换行**（用户要求"全部挤在一行"），宽度与棋盘一致：
+   `max-width: var(--board-size)` + 居中（见 :root 里 --board-size 的说明）。 */
 .controls {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
+  width: 100%;
+  max-width: var(--board-size);
+  margin-inline: auto;
 }
 
+/* 第二行：五个带文字的按钮。
+   与第一行**同宽**（用户要求）：第一行已经撑到棋盘宽度，第二行再按内容宽度
+   左对齐就会在右边留一大片空白。所以同样限制到棋盘宽度并居中，五个按钮
+   均分拉满（flex: 1 1 auto）—— 右边缘与棋盘齐平，点按面积也更大。 */
+.controls-row2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  width: 100%;
+  max-width: var(--board-size);
+  margin-inline: auto;
+}
+
+.controls-row2 .icon-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+/* 下拉框容器。
+   ⚠️ 这里改过两次，记下最终结论：
+   1. 原来容器是"白色半透明胶囊"，在深色面板上很突兀 → 我改成深色底 + 淡描边。
+   2. **用户要的是第 1 版**（"下拉框你不要调，调回去"）。用户真正指的是
+      **下拉展开后的选项**（浏览器默认白底）与游戏不搭 → 见下面 select option。
+   所以容器恢复成白色半透明胶囊：
+     background: rgba(255, 255, 255, 0.16)，无边框，文字暖白。
+   图标 + 文字 + 三角的**颜色**按用户要求逐个上色（见下面的九色表）。 */
 .ctl {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  flex: 1 1 0;
+  min-width: 0;
   padding: 4px 8px 4px 6px;
   border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.16);
+  /* 每个下拉框自带的色相；下面的图标、文字、三角全部取自它 */
+  color: var(--ctl-color, var(--panel-text));
 }
 
-/* 难度带说明文字，给它更多宽度 */
-.ctl-wide {
-  flex: 1 1 190px;
-  min-width: 170px;
+/* 下拉框里的线性图标：比按钮图标小一号（16 / 1.6），
+   因为它在一条胶囊里，和 13px 的文字并排，18px 会显得头重。 */
+.ctl > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.ctl-seed {
-  padding: 2px 6px;
+/* CSS 三角代替系统下拉箭头：系统箭头是深色位图、颜色不可控、各平台差异大，
+   所以自己画一个，颜色跟随胶囊的色相。 */
+.ctl::after {
+  content: '';
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  margin-top: -2px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  pointer-events: none;
 }
 
-.ctl-icon {
-  font-size: 14px;
-  line-height: 1;
-}
-
-select,
-input[type='text'] {
+select {
   font: inherit;
   font-size: 13px;
-  color: var(--text-light);
+  font-weight: 700;
+  color: inherit;
   background: transparent;
   border: 0;
   outline: none;
   cursor: pointer;
   width: 100%;
-}
-
-select option {
-  color: #241a18;
-  background: #fff;
-}
-
-.ctl-seed input {
-  width: 74px;
+  min-width: 0;
+  padding: 6px 16px 6px 2px;
+  border-radius: var(--radius);
+  /* 去掉系统外观，否则深色底会被平台的白色控件覆盖 */
+  -webkit-appearance: none;
+  appearance: none;
   text-align: center;
-  cursor: text;
+  text-align-last: center;
 }
 
-.spacer {
-  flex: 1 1 auto;
+/* ---------------------------------------------------------------------------
+   下拉展开后的选项（「下拉框选项」）
+   ---------------------------------------------------------------------------
+   ⚠️ 这才是用户真正指出的问题：原来是白底深字，与暖色游戏完全不搭。
+
+   为什么不能真的设成 `transparent`：**原生下拉列表由操作系统绘制**，
+   它需要不透明背景才能保证可读（悬停/选中态也是系统画的）。
+   真透明会在某些平台出现"选项文字叠在背后的棋盘上"。
+   所以用**接近面板色的深色 + 半透明**：视觉上与游戏一致，又不牺牲可读性。 */
+select option {
+  color: var(--panel-text);
+  /* color-mix 做半透明；不支持的老浏览器退化为上面的纯色，仍然可读 */
+  background: #5c3d36;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  padding: 6px;
+}
+
+select option:checked {
+  background: var(--accent);
+  color: #17322e;
+}
+
+/* ---------------------------------------------------------------------------
+   九个图标，九种颜色（用户指定）
+   ---------------------------------------------------------------------------
+   用户要求："无论是第一行还是第二行图标都要换颜色，而且是不同的颜色，
+   九个图标九种不同的清新颜色"。九个图标 =
+     第一行：难度、AI 强度、AI 速度、规则（4 个）
+     第二行：重来、撤回、AI操作、AI下一步、音量（5 个）
+
+   选色标准（三条同时满足）：
+   1. **清新**：高明度、中低饱和，不用纯色，不刺眼；
+   2. **各不相同**：九个色相尽量拉开（绿/蓝/黄/紫/橙红/青/黄绿/品红/蓝紫）；
+   3. **不和背景冲突**：对 --panel(#50332d 深棕) 的对比度落在 4.5:1 ~ 6.5:1，
+      看得清又不扎眼。逐色实测对比度写在每个色号后面。
+
+   实现方式：每个控件定义一个 --icon-color，图标 stroke / 文字 color /
+   三角 border-top 全部取自它，所以**只在这张表里改颜色**就能整体调。
+
+   ⚠️ 之前三版失败的原因：只在 rgba(255,252,247,0.x) 里动小数点，
+   色相没变，肉眼看不出区别 —— 所以这次直接换色相。 */
+:root {
+  --ic-difficulty: #a8e6c4; /* 淡薄荷绿  6.0:1 */
+  --ic-strength: #a9cdf0; /* 淡天蓝    5.7:1 */
+  --ic-speed: #f2d68c; /* 淡金黄    5.9:1 */
+  --ic-rules: #c7b9ee; /* 淡薰衣草紫 5.4:1 */
+  --ic-new-game: #f6ab97; /* 淡珊瑚    4.9:1 */
+  --ic-undo: #7fd8cd; /* 淡青      5.6:1 */
+  --ic-ai-auto: #b7e6a0; /* 淡草绿    6.2:1 */
+  --ic-ai-step: #f5acc6; /* 淡粉      4.9:1 */
+  --ic-mute: #cfc3f5; /* 淡蓝紫    5.7:1 */
+}
+
+/* 第一行：三个下拉框的色相（图标 + 文字 + 三角一起变） */
+#ctl-difficulty {
+  --ctl-color: var(--ic-difficulty);
+}
+#ctl-strength {
+  --ctl-color: var(--ic-strength);
+}
+#ctl-speed {
+  --ctl-color: var(--ic-speed);
+}
+
+/* 第二行 + 规则按钮：色相挂在按钮上，图标和悬停态都读它 */
+#rules {
+  --icon-color: var(--ic-rules);
+}
+#new-game {
+  --icon-color: var(--ic-new-game);
+}
+#undo {
+  --icon-color: var(--ic-undo);
+}
+#ai-auto {
+  --icon-color: var(--ic-ai-auto);
+}
+#ai-step {
+  --icon-color: var(--ic-ai-step);
+}
+#mute {
+  --icon-color: var(--ic-mute);
+}
+
+/* ---------------------------------------------------------------------------
+   线性图标
+   ---------------------------------------------------------------------------
+   所有按钮图标都是内联 SVG（stroke 描边），**不用 emoji** ——
+   emoji 是彩色实物图形，各平台长得不一样，也和整体线条风格不搭。
+
+   颜色：取按钮自己的 --icon-color（见上面九色表）。默认值给暖白，
+   这样没上色的按钮（overlay 里的）仍然正常。
+   描边宽 1.7：18px 尺寸下比 1.8 更轻，比 1.5 更清楚。 */
+.icon-btn svg,
+.overlay button svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--icon-color, rgba(255, 252, 247, 0.72));
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 只有「AI 自动演示」的播放三角用实心 —— 小尺寸下空心三角太弱。
+   暂停态用同一位置的帧：两条竖线也是实心（fill）。
+   两个 path 同一帧内只显示一个，由 #ai-auto 上的 .active 切换。 */
+#ai-auto svg {
+  fill: var(--icon-color, rgba(255, 252, 247, 0.72));
+}
+
+/* 播放 / 暂停两个状态互斥 */
+#ai-auto .ai-pause {
+  display: none;
+}
+#ai-auto.active .ai-play {
+  display: none;
+}
+#ai-auto.active .ai-pause {
+  display: block;
+}
+
+/* 悬停/按下时图标跟着文字一起变亮（往暖白走），否则按钮亮了图标还是暗的 */
+button:hover:not(:disabled) svg {
+  stroke: color-mix(in srgb, var(--icon-color, white) 55%, var(--panel-text));
+}
+button:hover:not(:disabled) #ai-auto svg {
+  fill: color-mix(in srgb, var(--icon-color, white) 55%, var(--panel-text));
+}
+
+/* 棋盘上的 overlay 按钮是深底上的深底，图标用白一点更清楚；
+   它们不在"九个图标"里，所以不上色，保持白色。 */
+.overlay button svg {
+  stroke: rgba(255, 255, 255, 0.9);
+}
+
+/* 图标数值按钮：图标 + 中文并排。尺寸由这组 padding 决定 ——
+   用户要先看这个大小是否合适再定稿。 */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 12px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+/* 「规则」按钮：图标 + 「规则」二字，按内容宽度，不参与下拉框的均分 */
+.controls .icon-btn {
+  flex: 0 0 auto;
+  padding: 7px 9px;
+}
+
+/* overlay 里的按钮：图标 + 文字并排 */
+.overlay button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 静音时隐藏声波、显示斜杠。状态由 JS 写在 aria-pressed 上。 */
+#mute .mute-slash {
+  display: none;
+}
+#mute[aria-pressed='true'] .mute-wave {
+  display: none;
+}
+#mute[aria-pressed='true'] .mute-slash {
+  display: inline;
+}
+
+/* 只给读屏软件看的文字：图标按钮必须有无障碍名称 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   规则弹窗
+   ---------------------------------------------------------------------------
+   与棋盘上的 .overlay 是**两件事**，所以用两个元素而不是复用一个：
+     .overlay —— 盖在棋盘上，表示"这一局结束"（随新局消失）
+     .modal   —— 盖住整个页面，表示"这是说明内容"（由用户关闭）
+   混用一个元素会让两种面板的消失条件互相干扰 —— 这个项目在
+   overlay 的显示状态上已经踩过一次坑（见 main.js 的 refreshControls 注释）。 */
+.modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(40, 26, 22, 0.55);
+  z-index: 20;
+}
+
+.modal.show {
+  display: flex;
+}
+
+.modal-panel {
+  max-width: 460px;
+  width: 100%;
+  max-height: min(82vh, 660px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px;
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--panel-text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  text-align: left;
+}
+
+.modal-panel h2 {
+  margin: 0;
+  font-size: 21px;
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.modal-body h3 {
+  margin: 6px 0 0;
+  font-size: 15px;
+}
+
+.modal-body p,
+.modal-body ul {
+  margin: 0;
+}
+
+.modal-body ul {
+  padding-left: 20px;
+}
+
+.modal-body li {
+  margin: 3px 0;
+}
+
+.modal-body .rule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.modal-body .rule-table th,
+.modal-body .rule-table td {
+  padding: 5px 8px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.modal-body .rule-note {
+  font-size: 13px;
+  opacity: 0.78;
 }
 
 button {
@@ -248,6 +624,13 @@ button.active {
   color: #04322a;
 }
 
+/* 演示进行中：按钮底色变成 accent 青绿，图标必须跟着变成同一族的深色，
+   否则浅绿图标压在青绿底上几乎看不见（九色里最亮的那几个尤其明显）。 */
+button.active svg {
+  stroke: #04322a;
+  fill: #04322a;
+}
+
 /* ------------------------------------------------------------------ 棋盘 */
 
 .board-row {
@@ -255,12 +638,17 @@ button.active {
   align-items: center;
   justify-content: center;
   gap: 4px;
+  /* 高度不够时允许收缩（棋盘是 1:1，跟着变矮变窄），但不许拉高。
+     没有这一条时，小屏上"上方控件 + 棋盘 + 下方提示"总高超过一屏，
+     棋盘会被挤出屏幕底部。 */
+  flex: 0 1 auto;
+  min-height: 0;
 }
 
 /* 两侧的庆祝轨道：不吃点击事件 */
 .fx {
   flex: 1 1 50px;
-  max-width: 100px;
+  max-width: var(--fx-track);
   height: 200px;
   pointer-events: none;
 }
@@ -268,7 +656,8 @@ button.active {
 .board-wrap {
   position: relative;
   flex: 0 0 auto;
-  width: min(100%, 452px);
+  width: 100%;
+  max-width: var(--board-size);
   aspect-ratio: 1 / 1;
   padding: var(--gap);
   border-radius: 12px;
@@ -430,6 +819,30 @@ button.active {
   animation: tile-merge 170ms ease-out;
 }
 
+/* ---------------------------------------------------------------------------
+   撤销动画用的两个状态类（见 renderer.animateUndo）
+   ---------------------------------------------------------------------------
+   撤销时不能用 .new / .merged：那两套动画会写 transform（缩放），
+   而撤销**同时**要做位移动画，两边的 transform 会打架。
+   这里只碰 opacity，位移交给 .tile 自己的 transition，互不干扰。
+
+   为什么用"先加类让它过渡"的写法而不是 animation：
+   新建的方块一插进 DOM 就是 opacity:1，直接加动画会从"已经显示"开始播，
+   看不到渐显。所以先挂 .undo-appear（opacity:0），下一帧再摘掉，
+   过渡才会真的从 0 走到 1。 */
+.tile {
+  /* transform 的过渡沿用上面那条；这里补 opacity，时长略短于滑动 */
+  transition: transform 110ms ease-in-out, opacity 120ms ease-out;
+}
+
+.tile.undo-out {
+  opacity: 0;
+}
+
+.tile.undo-appear {
+  opacity: 0;
+}
+
 /* 合并时飘出的 +N */
 @keyframes score-float {
   0% {
@@ -540,8 +953,25 @@ button.active {
   display: none;
 }
 
-.hint {
+/* 下半段：棋盘之下的所有内容（揭示条 + 提示行）合成一个块。
+   桌面上它没有自己的样式，只是给内容一个共同的父元素；
+   手机端布局用它当"下半段"与 .topbar 对称吸收剩余空间（见手机端那节）。 */
+.footer {
+  width: 100%;
+  /* 与棋盘之间留一段距离。放在这里而不是 .hint 的 margin-top：
+     揭示条（.notice）与提示行谁先显示不定，间距归 .footer 管才不会被叠加。 */
   margin-top: 14px;
+}
+
+/* 快捷键提示。⚠️ 这不是"控件备注"—— 用户要求删的是下拉选项里的备注，
+   操作提示要留着（我先前误删过一次，已恢复）。
+   宽度与控件行、棋盘一致（--board-size），并且**文字居中排**（用户指定的 A 方案：
+   整段文字在这 452px 里居中，而不是容器对齐、文字左起）。 */
+.hint {
+  width: 100%;
+  max-width: var(--board-size);
+  margin-inline: auto;
+  text-align: center;
   font-size: 12px;
   line-height: 1.7;
   color: rgba(255, 255, 255, 0.84);
@@ -573,6 +1003,76 @@ kbd {
   }
 }
 
+/* ---------------------------------------------------------------------------
+   手机端布局：棋盘上下居中
+   ---------------------------------------------------------------------------
+   用户 2026-09-13 要求："棋盘要在上下居中" → 随后的修正："标题按钮你全移下来
+   干什么，全部放上去，只不过移动一点点，因为怕和棋盘空太多了"。
+
+   所以最终做法是：**标题与两行控件留在页面顶部不动**，只给棋盘一段向上的
+   微调（见下面的 --lift），底部留白随之略多一些。
+   ⚠️ 不要用 `justify-content: center` 让整块内容居中 —— 那会把标题往下推
+   115px（实测），标题跑到屏幕三分之一处，非常难看。
+
+   下面记录我给"严格居中"试过的四条路，全部实测失败，别再走：
+   1. `.board-row { flex: 1 }` —— 棋盘只在**行内**居中，行被拉高后顶到下方
+      内容之上，棋盘偏下 78px。
+   2. `.topbar { flex: 1 }` —— flex-grow 是在**各自内容高度之上**再分剩余空间，
+      顶部内容 64px、底部 113px，于是两边差 99px。
+   3. 零高度 .spacer + .footer 各 flex:1（basis auto）—— 两者仍不等
+      （120.8 / 234.2，差 113 = footer 内容高）；改成 basis 0 后两者相等，
+      但棋盘仍不居中：355px 分给了这两个盒子，棋盘上下只剩 171.5px。
+   4. 整块内容 `justify-content: center` —— 数学上对称了（上下各 114.8px），
+      但标题被推下来一大截，用户否掉。
+
+   根本原因：顶部控件（标题 64 + 两行 36+32 + 间距）= 156px，
+   底部提示 113px，上方天然就比下方多一截。真要让棋盘中心线压到屏幕中心，
+   要么把标题那一大截留白补在最上面（用户不要），要么把棋盘缩小到约 267px。
+   → 采用用户的取舍：留一点点偏差，只做小幅微调。
+   --------------------------------------------------------------------------- */
+@media (max-width: 560px), (pointer: coarse) {
+  /* 棋盘上方的间距 —— 这个值决定棋盘落在屏幕的哪个高度上。
+     用户的要求："棋盘上下居中，然后那些标题和按钮往下移动一点点" ——
+     也就是**标题与按钮自上而下排、棋盘被顶到居中位置**，不是反过来压棋盘。
+
+     ⚠️ 不能写成一个固定像素：实测同一个值在小屏 iPhone 上偏 8.5px、
+     在 6.7 吋上偏 -94.5px。要随屏幕高度变。
+
+     推导（记 --board-h = 棋盘边长 = min(100vw - 32, 452)）：
+       标题上边距 20 + 标题 64 + 14 + 控件 36 + 10 + 控件 32 + 10 = 186  （棋盘顶边之前）
+       棋盘之后：14 + 提示行 41 + body 下边距 40 = 95
+       要让棋盘中心 = 视口中心：lift = (100dvh - board-h) / 2 - 186 - 95 + 95
+       → 常数 = 186 + 95 - 95 = 186？不，实测才是准的：
+         常数 202 → 棋盘统一偏高 26px；202 - 26 = 176 → 实测偏差 0 附近。
+         （推导式里漏算了 .footer 的 margin-top 与 body 下边距的重叠关系，
+          所以以**实测**为准，别照推导硬算。）
+     下限 0：屏幕特别矮时退回原来的排法，不会把棋盘顶出屏幕。
+
+     ⚠️ 量偏差时要用 **100dvh 或 clientHeight**，不要用 window.innerHeight：
+     Playwright 的移动仿真里 innerHeight 会明显大于设备可视高（Pro Max 实测
+     innerHeight 1123 而 100dvh 932），照 innerHeight 判会把"其实已经居中"
+     误判成"偏了 121px"，然后越调越歪。 */
+  .board-row {
+    --board-h: min(100vw - 32px, 452px);
+    /* 下限 -12px：屏幕特别矮（小屏 360x640 这类，内容本来就顶到边界）时
+       还允许再上移一点，让棋盘尽量靠近中心；再往下就要顶到标题了，
+       所以地板设在这里而不是无限放开。 */
+    margin-top: clamp(-12px, calc((100dvh - var(--board-h)) / 2 - 176px), 999px);
+  }
+}
+
+/* 手机端 body 内边距：恢复桌面端那套（上 20 / 下 40）。
+   ⚠️ 中途为"整块内容居中"把上边距清成 0 过 —— 那个方案已被用户否掉
+   （标题被推下来 115px）。回到从顶部自然排版后，这里的原值就该留着。 */
+@media (max-width: 560px), (pointer: coarse) {
+  body {
+    padding-top: 20px;
+    padding-bottom: 40px;
+  }
+}
+
+/* 小屏（手机竖屏）：两侧烟花轨道没有位置，直接收掉；
+   分数框也不再往中间偏，把宽度让给分数本身。 */
 @media (max-width: 420px) {
   .fx {
     display: none;

@@ -125,10 +125,41 @@ UI 上要能选「快 / 均衡 / 强」三档，本质是给不同的 `timeBudge
 ### 构建链
 
 - 已具备：Android SDK（`ANDROID_HOME` 已设）、JDK 17 / 21、`D:\Codex Tools\Android`、`gradle-home`
-- 需要新增：**Android NDK**（编译 C++ 引擎为各 ABI 的 `.so`）。
-  **安装前先列一遍 `D:\Codex Tools` 确认没有现成的。**
+- **Android NDK 已装好**：`ndk;29.0.14206865`（`D:\Codex Tools\Android\ndk\29.0.14206865`）。
+  只有 **JNI 路线**才需要它；当前的 WebView 方案是纯 Java，不依赖 NDK。
 - `ANDROID_HOME` 与 `ANDROID_SDK_ROOT` 是全局环境变量，**不得为本项目修改**；
   项目专属 SDK / NDK 路径走项目内配置
+
+### ⚠️ debug APK 必须提交进仓库（用户 2026-09-13 明确要求）
+
+`android/app/build/outputs/apk/debug/app-debug.apk` 是**交付物**，不是中间产物：
+提交进仓库后 clone 下来就能直接装，不必先装 Android SDK / Gradle / JDK 再自己构建。
+
+`.gitignore` 为此做了三处处理，**改动前先读懂，否则会静默失效**：
+
+1. **顶层 `build*/` 已经删掉**。`*` 会把 `android/app/build/` 一起吃掉，
+   而 gitignore 的 negation **救不回来** —— 父目录一旦被排除，git 根本不会往里看，
+   放行规则形同不存在。实测 `git check-ignore` 指向的就是那一行。
+   现在逐个列出：`engine/build/`、`engine/build-tests/`、`engine/build-dev/`。
+   **新增别的构建目录时也要逐个加，不要图省事写 `build*/`。**
+2. `android/app/build/*` 逐层放行到 `outputs/apk/debug/`（每层都要 `!`，
+   只写最里层不够）。
+3. 原来那条 `*.apk` **已删除**；`*.aab`、`*.keystore`、`*.jks` 仍然忽略 ——
+   release 的签名密钥绝对不能进仓库。
+
+**代价（知情接受）**：APK 是二进制，重打一次就是约 2 MB 的提交，git 看不出内容差异。
+所以改完 `web/` 重新打包时，把「同步资源 + 重新打包 + 提交 APK」当成**同一次提交**做完，
+不要零零散散混进普通代码提交。
+
+配套命令（`tools/sync-android-assets.ps1` 会复制并逐个比对大小，不一致就报错退出）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync-android-assets.ps1
+# 然后用 android\README.md 里的 gradle 命令重新打包
+```
+
+> ⚠️ 同步这一步最容易漏。踩过：APK 里的 `style.css` 停在 11869 字节，
+> 而 `web/` 已经 33747 —— 打出来的包装的还是几轮之前的界面，且**没有任何报错**。
 
 ## 硬件约束（已实测环境事实）
 

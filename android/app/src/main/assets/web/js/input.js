@@ -38,10 +38,27 @@ const KEY_MAP = new Map([
 /** 滑动多远才算一次操作（像素）。太小会把点击误判成滑动。 */
 const SWIPE_THRESHOLD = 24;
 
+/**
+ * 这些区域内**不接管滑动**，保留它们本来的点击/选择行为。
+ *
+ * 用户 2026-09-13 要求"所有位置都能够触发方块的移动"，
+ * 但按钮和下拉框必须排除 —— 否则点「重来」会变成走子。
+ */
+const SWIPE_EXCLUDED = 'button, select, input, textarea, a, .modal, .overlay';
+
+/** 事件是否发生在不该接管滑动的元素上（点下去时判断一次即可）。 */
+function isExcludedTarget(target) {
+  if (!target || typeof target.closest !== 'function') return false;
+  try {
+    return target.closest(SWIPE_EXCLUDED) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export class Input {
   /**
    * @param {object} options
-   * @param {HTMLElement} options.boardElement 接收滑动的元素
    * @param {(direction: string) => void} options.onMove
    * @param {() => boolean} [options.isLocked] 查询"现在是否应丢弃输入"。
    *   **必须是查询而不是快照** —— 早期实现用一个 locked 布尔量、由外部在
@@ -51,9 +68,10 @@ export class Input {
    * @param {() => void} [options.onUndo] U 键 / Backspace 撤销
    * @param {() => void} [options.onToggleMute] M 键静音
    * @param {() => void} [options.onAiStep] 空格让 AI 走一步
+   * @param {() => boolean} [options.isSwipeBlocked] 弹窗打开等"能拖但不该走子"的状态。
+   *   与 isLocked 分开：isLocked 是"忙，丢掉输入"，这个是"这次手势不算数"。
    */
   constructor({
-    boardElement,
     onMove,
     isLocked,
     onUnlock,
@@ -61,8 +79,8 @@ export class Input {
     onUndo,
     onToggleMute,
     onAiStep,
+    isSwipeBlocked,
   }) {
-    this.boardElement = boardElement;
     this.onMove = onMove;
     this.isLocked = isLocked || (() => false);
     this.onUnlock = onUnlock;
@@ -70,6 +88,8 @@ export class Input {
     this.onUndo = onUndo;
     this.onToggleMute = onToggleMute;
     this.onAiStep = onAiStep;
+    // 弹窗打开之类的情况：手指仍可拖动，但不该走子
+    this.isSwipeBlocked = isSwipeBlocked || (() => false);
 
     this._pointerId = null;
     this._startX = 0;
@@ -130,17 +150,25 @@ export class Input {
       }
     });
 
-    // 指针事件同时覆盖触屏、笔和鼠标拖拽
-    this.boardElement.addEventListener('pointerdown', (event) => {
+    // 指针事件同时覆盖触屏、笔和鼠标拖拽。
+    //
+    // ⚠️ 监听挂在 **document** 上，不是棋盘上（用户 2026-09-13 要求：
+    // "所有位置都能够触发方块的移动"）。挂在棋盘上时，只有在棋盘里起手的
+    // 拖动才算数 —— 手机上一根拇指常常落在棋盘外，用户的感觉就是"没反应"。
+    //
+    // 排除按钮/下拉框/弹窗：否则点「重来」会被当成走子。
+    // 开始拖动后把指针捕获到 documentElement，手指滑到哪儿事件都还能收到。
+    document.addEventListener('pointerdown', (event) => {
       this._fireUnlock();
       if (this._pointerId !== null) return; // 已经在跟一个指针了
+      if (isExcludedTarget(event.target)) return; // 按钮/下拉框/弹窗：不接管
       this._pointerId = event.pointerId;
       this._startX = event.clientX;
       this._startY = event.clientY;
-      // 捕获指针，手指滑出棋盘边界也能收到 pointerup
-      if (this.boardElement.setPointerCapture) {
+      const capture = document.documentElement;
+      if (capture && capture.setPointerCapture) {
         try {
-          this.boardElement.setPointerCapture(event.pointerId);
+          capture.setPointerCapture(event.pointerId);
         } catch {
           // 某些浏览器在特定情况下会抛，忽略即可
         }
@@ -157,6 +185,7 @@ export class Input {
       const absY = Math.abs(dy);
 
       if (Math.max(absX, absY) < SWIPE_THRESHOLD) return; // 当作点击，不算滑动
+      if (this.isSwipeBlocked()) return; // 弹窗开着之类
 
       // 主轴方向决定走子方向
       const direction =
@@ -164,13 +193,14 @@ export class Input {
       this.tryMove(direction);
     };
 
-    this.boardElement.addEventListener('pointerup', finish);
-    this.boardElement.addEventListener('pointercancel', (event) => {
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', (event) => {
       if (event.pointerId === this._pointerId) this._pointerId = null;
     });
 
-    // 触屏上阻止页面跟着滑动/缩放 —— 否则滑动手势会滚页面
-    this.boardElement.addEventListener(
+    // 触屏上拖动时阻止页面跟着滚 —— 整屏滑动没有这一步的话，
+    // 页面会一边滚一边走子。只在确实跟随着一个指针时拦截，不影响正常滚动。
+    document.addEventListener(
       'touchmove',
       (event) => {
         if (this._pointerId !== null) event.preventDefault();
