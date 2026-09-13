@@ -31,9 +31,9 @@ const TIMING = {
    * 调小可以更快，但再小就看不到"滑过去"的过程了 —— 滑动本身是这个游戏的信息，
    * 不是装饰。真要更快应该先动阈值（SWIPE_THRESHOLD），而不是把动画压没。
    */
-  slide: 80,
-  mergePop: 130,
-  appear: 120,
+  slide: 60,
+  mergePop: 100,
+  appear: 100,
 };
 
 function prefersReducedMotion() {

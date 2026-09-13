@@ -730,7 +730,7 @@ button.active svg {
   font-variant-numeric: tabular-nums;
   /* 时长必须与 renderer.js 的 TIMING.slide 一致，否则动画结束后位置会跳。
      80ms 是"手感"调过的值：原来 110ms，用户反馈操作有延迟（见 renderer.js 的说明）。 */
-  transition: transform 80ms ease-in-out;
+  transition: transform 60ms ease-in-out;
   will-change: transform;
   color: var(--text-light);
 }
@@ -839,11 +839,11 @@ button.active svg {
 
 /* 时长与 renderer.js 的 TIMING.appear / TIMING.mergePop 对应 */
 .tile.new {
-  animation: tile-appear 120ms ease-out;
+  animation: tile-appear 100ms ease-out;
 }
 
 .tile.merged {
-  animation: tile-merge 130ms ease-out;
+  animation: tile-merge 100ms ease-out;
 }
 
 /* ---------------------------------------------------------------------------
@@ -861,7 +861,7 @@ button.active svg {
   /* transform 的过渡沿用上面那条；这里补 opacity，时长略短于滑动。
      ⚠️ 两条 .tile 规则里 transform 的时长**必须一致**（现在都是 80ms）——
      后一条会覆盖前一条，写歪了滑动就会时快时慢。 */
-  transition: transform 80ms ease-in-out, opacity 100ms ease-out;
+  transition: transform 60ms ease-in-out, opacity 90ms ease-out;
 }
 
 .tile.undo-out {

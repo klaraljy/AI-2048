@@ -269,6 +269,51 @@ console.log('input.js 测试：');
   check('解除拦截后恢复走子', received.join(',') === 'down', received.join(','));
 }
 
+// 9. 滑过阈值就立刻走子，**不等抬手**
+//
+// 用户反馈"触屏到操作就已经很慢了"。原来判定只在 pointerup 里做，
+// 延迟 = 滑完阈值 + **抬手时间** + 动画时长，抬手那一下是纯白等
+//（而且慢慢松手的人感觉特别慢）。现在 pointermove 越阈值即触发。
+// 这里锁住两件事：① 越阈值立刻走子；② 随后的 pointerup **不能**再走一次。
+{
+  const state = { locked: false };
+  const { received } = makeInput(state);
+
+  const down = (x, y) =>
+    globalThis.document.dispatch('pointerdown', { pointerId: 7, clientX: x, clientY: y, target: fakeEl() });
+  const move = (x, y) =>
+    globalThis.document.dispatch('pointermove', { pointerId: 7, clientX: x, clientY: y, target: fakeEl() });
+  const up = (x, y) =>
+    globalThis.document.dispatch('pointerup', { pointerId: 7, clientX: x, clientY: y, target: fakeEl() });
+
+  // ① 指针还没抬起，只是滑过了阈值 → 应当已经走子
+  down(200, 200);
+  move(200, 180); // 向上滑 20px，超过 12px 阈值
+  check('滑过阈值立刻走子（不等抬手）', received.join(',') === 'up', received.join(','));
+
+  // ② 抬手不能重复触发
+  received.length = 0;
+  up(200, 160);
+  check('随后抬手不重复走子（避免一步走两次）', received.length === 0, received.join(','));
+
+  // ③ 位移不足阈值时不该触发
+  received.length = 0;
+  down(300, 300);
+  move(304, 303); // 只有 4px
+  check('位移不足阈值时 pointermove 不触发', received.length === 0, received.join(','));
+  up(304, 303);
+  check('位移不足阈值时抬手也不触发（当作点击）', received.length === 0, received.join(','));
+
+  // ④ 一次大幅滑动只算一步（多次 pointermove 不重复触发）
+  received.length = 0;
+  down(200, 400);
+  move(200, 380);
+  move(200, 340);
+  move(200, 300);
+  up(200, 300);
+  check('一次滑动只走一步', received.join(',') === 'up', received.join(','));
+}
+
 console.log('');
 if (failures > 0) {
   console.error(`input.js 测试失败：${failures} 项`);

@@ -185,22 +185,55 @@ export class Input {
       }
     });
 
-    const finish = (event) => {
-      if (this._pointerId === null || event.pointerId !== this._pointerId) return;
-      this._pointerId = null;
-
+    /**
+     * 判定一次滑动。返回是否真的走了一步。
+     *
+     * `requireThreshold=false` 用于 pointerup：那一步只处理"轻微滑动后抬手"，
+     * 位移不够时按点击处理。
+     */
+    const resolveSwipe = (event, { requireThreshold }) => {
       const dx = event.clientX - this._startX;
       const dy = event.clientY - this._startY;
       const absX = Math.abs(dx);
       const absY = Math.abs(dy);
 
-      if (Math.max(absX, absY) < SWIPE_THRESHOLD) return; // 当作点击，不算滑动
-      if (this.isSwipeBlocked()) return; // 弹窗开着之类
+      if (requireThreshold && Math.max(absX, absY) < SWIPE_THRESHOLD) return false;
+      if (this.isSwipeBlocked()) return false;
 
       // 主轴方向决定走子方向
       const direction =
         absX > absY ? (dx > 0 ? DIRECTION.right : DIRECTION.left) : dy > 0 ? DIRECTION.down : DIRECTION.up;
-      this.tryMove(direction);
+      return this.tryMove(direction);
+    };
+
+    /**
+     * **滑过阈值就立刻走子，不等抬手。**
+     *
+     * 用户反馈"触屏到操作就已经很慢了"。原来判定只在 `pointerup` 里做，
+     * 于是延迟 = 手指滑完阈值的时间 **+ 抬手的时间** + 动画时长。
+     * 抬手那一下是纯白等（50~100ms），而且抬手的时机完全由玩家决定 ——
+     * 慢慢松手的人会觉得特别慢。
+     *
+     * 现在在 `pointermove` 里一旦越过阈值就立刻判定并发起走子，
+     * 手指还按在屏幕上、方块已经开始动了。随后这次指针跟踪立即结束，
+     * 所以 `pointerup` 不会再判一次（不然一步会走两次）。
+     *
+     * 阈值取 SWIPE_THRESHOLD 本身（12px）。取更小会让"手指按下时的轻微抖动"
+     * 就触发走子，玩家想点一下却走了一步。
+     */
+    document.addEventListener('pointermove', (event) => {
+      if (this._pointerId === null || event.pointerId !== this._pointerId) return;
+      if (resolveSwipe(event, { requireThreshold: true })) {
+        // 已经走了一步，这次手势到此为止
+        this._pointerId = null;
+      }
+    });
+
+    /** 抬手时只处理"滑动不够、没在 move 里触发过"的情况。 */
+    const finish = (event) => {
+      if (this._pointerId === null || event.pointerId !== this._pointerId) return;
+      this._pointerId = null;
+      resolveSwipe(event, { requireThreshold: true });
     };
 
     document.addEventListener('pointerup', finish);
