@@ -609,9 +609,7 @@ function startAuto() {
     // 只在测试档开（见 config.js 的 SPEED.yieldFrame）：它才是"连轴转"的那一档，
     // 慢/中/快本来就靠 setTimeout 间隔让出了。
     const spec = SPEED[el.speed ? el.speed.value : 'medium'];
-    if (spec && spec.yieldFrame) {
-      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-    }
+    if (spec && spec.yieldFrame) await yieldToBrowser();
 
     if (!autoRunning || !game || game.gameOver) {
       stopAuto();
@@ -631,6 +629,50 @@ function stopAuto() {
   el.aiAuto.classList.remove('active');
   el.aiAuto.title = 'AI 自动演示';
   refreshControls();
+}
+
+/**
+ * 让出执行权给浏览器，让它有机会重绘。
+ *
+ * ## 为什么不能只写 `await new Promise(r => requestAnimationFrame(r))`
+ *
+ * 这个写法我第一版就是那么写的，结果**切到别的标签页后自动演示彻底停死**，
+ * 而且**切回前台也不会恢复**（用户报的："之前我切换网页照样能跑，这次就不行了"）。
+ *
+ * 原因：`requestAnimationFrame` 在**后台标签页里根本不触发**（浏览器不渲染），
+ * 于是那个 await 永远挂着 —— 循环已经死了，不是"慢"。
+ * 实测复现：前台 3 秒 +616 分，切后台 6 秒 **+0**，切回前台再 3 秒**还是 +0**。
+ *
+ * ## 现在的做法
+ *
+ * 1. 页面在后台：**不去等帧** —— 后台本来就没有重绘需求，
+ *    用 setTimeout 让出即可，循环继续推进（进度按浏览器对后台定时器的节流速度走）。
+ * 2. 页面在前台：等帧，但**带一个兜底定时器**，这样即使某一帧迟迟不来也不会卡死。
+ *
+ * ⚠️ 判据用 `document.visibilityState !== 'visible'` 而不是 `document.hidden`：
+ * 某些环境（测试桩、老浏览器）没有 `hidden` 属性，读它会是 undefined 而误判成"前台"，
+ * 而 visibilityState 缺失时同样按"看不到"处理更安全。
+ */
+async function yieldToBrowser() {
+  const visible = typeof document !== 'undefined' && document.visibilityState === 'visible';
+  if (!visible) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return;
+  }
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    // 兜底：正常情况下 rAF 会在 ~16ms 内触发，50ms 还没来就直接放行
+    const timer = setTimeout(finish, 50);
+    requestAnimationFrame(() => {
+      clearTimeout(timer);
+      finish();
+    });
+  });
 }
 
 // ------------------------------------------------------------------ 装配

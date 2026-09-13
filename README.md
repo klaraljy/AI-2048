@@ -104,8 +104,7 @@ android\              消费者③：Android 工程 + JNI 薄封装
   app\src\main\assets\web\   前端的副本（改完 web\ 必须同步，见下）
 benchmarks\           基准种子集（可复现性资产，纳入版本管理）
 docs\                 简报、协议定义、实验记录、踩坑总结
-  lessons-learned.md   **这个项目犯过的错与本项目的经验教训**
-```
+  lessons-learned.md   **这个项目犯过的错与本项目的经验教训**```
 
 ## 快速开始（桌面）
 
@@ -235,7 +234,7 @@ engine/  (静态库 ai2048_core，不依赖网络/文件系统/线程模型)
 | `docs/brief.md` | 项目简报：核心循环、范围、非目标、里程碑 |
 | `docs/protocol.md` | 前端 ↔ 引擎的报文协议（WebSocket 与 JNI 共用同一套语义） |
 | `docs/results/` | 跑批与实验记录（含负结果） |
-| **`docs/lessons-learned.md`** | **这个项目犯过的错：32 条，按流程 / 构建 / 前端 / 算法 / 测量分类** |
+| **`docs/lessons-learned.md`** | **这个项目犯过的错：33 条，按流程 / 构建 / 前端 / 算法 / 测量分类** |
 | `android/README.md` | Android 构建、资源同步、JNI 说明、真机排查步骤 |
 
 ## 许可
