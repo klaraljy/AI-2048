@@ -154,9 +154,17 @@ body {
 
 /* ------------------------------------------------------- 控件（两行，用户指定） */
 
-/* 第一行：三个选择框 + 规则按钮；第二行：五个操作按钮。
-   两行用同一套排布规则，所以共用选择器。 */
-.controls,
+/* 第一行：难度 / AI 强度 / AI 速度 + 规则按钮。
+   ⚠️ **不换行**（用户要求"全部挤在一行"）—— 所以这里没有 flex-wrap，
+   控件用紧凑尺寸；窄屏靠缩放而不是折行来适配。 */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+/* 第二行：五个带文字的按钮，允许换行（窄屏时挤不下） */
 .controls-row2 {
   display: flex;
   align-items: center;
@@ -165,21 +173,59 @@ body {
   margin-bottom: 10px;
 }
 
+/* 下拉框容器。
+   ⚠️ 这里踩过一个配色问题：原来是"白色半透明胶囊 + 系统默认白底下拉"，
+   在深色面板上非常突兀。现在改成与面板同色系的深色底、淡描边，
+   并把图标换成 CSS 画的三角（原来那个系统箭头在深色底上几乎看不见）。 */
 .ctl {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 8px 4px 8px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0;
   border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.14);
 }
 
-/* 选择框前的短标签（「难度」「AI 强度」「AI 速度」）。
-   用它代替原来的 emoji：文字更清楚，也不依赖平台 emoji 字体。 */
-.ctl-label {
+/* CSS 三角形代替系统下拉箭头：系统箭头是深色位图，在深底上看不清 */
+.ctl::after {
+  content: '';
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  margin-top: -2px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+select {
+  font: inherit;
   font-size: 13px;
-  opacity: 0.85;
-  white-space: nowrap;
+  font-weight: 700;
+  color: var(--panel-text);
+  background: transparent;
+  border: 0;
+  outline: none;
+  cursor: pointer;
+  width: 100%;
+  padding: 5px 22px 5px 9px;
+  border-radius: var(--radius);
+  /* 去掉系统外观，否则深色底会被平台的白色控件覆盖 */
+  -webkit-appearance: none;
+  appearance: none;
+  text-align: center;
+  text-align-last: center;
+}
+
+/* 下拉展开的列表由系统绘制，只能给选项上色 —— 用深底白字贴近面板 */
+select option {
+  color: #2b1d1a;
+  background: #fdf6f0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -207,12 +253,22 @@ body {
   fill: currentColor;
 }
 
-/* 纯图标按钮：正方形，尺寸由 padding 与图标大小共同决定 */
+/* 图标数值按钮：图标 + 中文并排。尺寸由这组 padding 决定 ——
+   用户要先看这个大小是否合适再定稿。 */
 .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 7px;
+  gap: 5px;
+  padding: 7px 12px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+/* 只有「规则」按钮是纯图标（没有文字），给它正方形内边距 */
+.controls .icon-btn {
+  flex: 0 0 auto;
+  padding: 7px 9px;
 }
 
 /* overlay 里的按钮：图标 + 文字并排 */
@@ -332,22 +388,6 @@ body {
 .modal-body .rule-note {
   font-size: 13px;
   opacity: 0.78;
-}
-
-select {
-  font: inherit;
-  font-size: 13px;
-  color: var(--text-light);
-  background: transparent;
-  border: 0;
-  outline: none;
-  cursor: pointer;
-  width: 100%;
-}
-
-select option {
-  color: #241a18;
-  background: #fff;
 }
 
 button {

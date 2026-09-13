@@ -18,13 +18,12 @@ import { createTransport } from './transport.js';
 import {
   SPEED,
   strengthOptions,
+  strengthsDetail,
   speedOptions,
   specFor,
   toEngineConfig,
   requestTimeoutMs,
   difficultyOptions,
-  difficultyLabel,
-  isStandardDifficulty,
   DIFFICULTY,
   DEFAULT_DIFFICULTY,
   DEFAULT_STRENGTH,
@@ -68,7 +67,6 @@ const el = {
   score: document.getElementById('score'),
   best: document.getElementById('best'),
   difficulty: document.getElementById('difficulty'),
-  difficultyNotice: document.getElementById('difficulty-notice'),
   strength: document.getElementById('strength'),
   speed: document.getElementById('speed'),
   newGameButton: document.getElementById('new-game'),
@@ -377,17 +375,45 @@ function hideOverlay() {
 /**
  * 规则说明的内容。
  *
- * ⚠️ **这里的每个数字都必须与实现一致**，因为它会显示给玩家。
- * 写死的文案最容易随改动作废 —— 本项目就发生过：难度改成"填满行/列"之后，
- * 下拉框里还写着"80% 生成在最大块旁"。改规则时**必须回来核对这里**。
+ * ⚠️ **刻意做成数据驱动**：难度与强度的表格直接读 `DIFFICULTY` / `STRENGTH`
+ * / `strengthsDetail()`，不在这里重抄一遍数字。
  *
- * 数据来源（改的时候对这几处）：
- *   出 4 概率      → engine/src/core/game.h 的 kFourSpawnEasy/Normal/Hard
- *   难度的生成策略 → engine/src/core/game.cpp 的 SafeScore / HostileScore
- *   加权占比       → engine/src/core/game.h 的 kEasy/HardWeightedShare
- *   三档强度深度   → web/js/config.js 的 STRENGTH
+ * 理由是踩过的坑：上一版把数字写死在文案里，于是难度改成"填满行/列"之后，
+ * 下拉框里还写着"80% 生成在最大块旁" —— **两处真相必然分家**。
+ * 现在改 config.js 的数值，规则弹窗自动跟着变。
+ *
+ * 仍然需要手写、也必须回来核对的是**规则描述本身**（比如"88% 按填满加权"
+ * 这句话的百分比来自 core/game.h 的 kHardWeightedShare）——
+ * 改生成规则时对这几处：
+ *   出 4 概率 / 加权占比 → engine/src/core/game.h
+ *   难度的评分策略       → engine/src/core/game.cpp 的 SafeScore / HostileScore
+ *   三档强度深度         → web/js/config.js 的 STRENGTH（本函数自动读取）
  */
-const RULES_HTML = `
+function rulesHtml() {
+  const p4 = { easy: '10%', normal: '15%', hard: '20%' };
+  const diffDesc = {
+    easy: '80% 偏向安全位置（角落、边上、空旷处）',
+    normal: '全盘均匀随机（标准 2048 规则）',
+    hard: '88% 偏向"把某一行／列填满"的位置',
+  };
+  const diffRows = Object.entries(DIFFICULTY)
+    .map(
+      ([value, spec]) =>
+        `<tr><td>${spec.label}</td><td>${diffDesc[value] ?? '—'}</td><td>${p4[value] ?? '—'}</td></tr>`
+    )
+    .join('');
+
+  const strengthRows = strengthsDetail()
+    .map(
+      (s) =>
+        `<tr><td>${s.label}</td><td>${s.layers} 层（${s.steps} 步）</td><td>${s.budgetMs} ms</td></tr>`
+    )
+    .join('');
+  const strengthNotes = strengthsDetail()
+    .map((s) => `${s.label}：${s.note}`)
+    .join('；');
+
+  return `
   <h3>怎么玩</h3>
   <ul>
     <li>4×4 棋盘，开局两个方块。四个方向滑动，同值方块相撞合并成两倍。</li>
@@ -397,51 +423,52 @@ const RULES_HTML = `
     <li>合出 <strong>2048</strong> 不弹窗打断（可以继续往上合）。</li>
   </ul>
 
-  <h3>难度改变的是生成规则</h3>
+  <h3>难度：改的是生成规则</h3>
   <p class="rule-note">难度不是"AI 强弱"，而是新方块出现在哪、出现多大的概率。</p>
   <table class="rule-table">
     <tr><th>难度</th><th>新方块落点</th><th>出 4 的概率</th></tr>
-    <tr><td>简单</td><td>80% 偏向安全位置（角落、边上、空旷处），20% 全盘随机</td><td>10%</td></tr>
-    <tr><td>中等</td><td>全盘随机（标准 2048 规则）</td><td>15%</td></tr>
-    <tr><td>困难</td><td>88% 偏向"把某一行／列填满"的位置，12% 全盘随机</td><td>20%</td></tr>
+    ${diffRows}
   </table>
   <p class="rule-note">
     困难档的用意：一行只要还有空位就能被继续滑动，<strong>填满之后就变刚性</strong>，
-    你只能靠移动整盘来重新腾挪。所以它会优先去填那些"已经快满了"的行或列。
-    它还会避开能让你立刻合并的位置，以及角落（角落对你有利）。
+    你只能靠移动整盘来重新腾挪。所以它会优先去填那些"已经快满了"的行或列；
+    同时避开能让你立刻合并的位置，以及角落（角落对你有利）。
   </p>
   <p class="rule-note">
-    ⚠️ 非中等难度的分数<strong>不可与标准难度或历史最高分比较</strong> ——
-    规则的期望收益不同。
+    ⚠️ <strong>非「标准」难度的分数不可与标准难度或历史最高分比较</strong> ——
+    规则的期望收益不同：简单档天然更容易刷高分，困难档天然更难。
   </p>
 
-  <h3>AI 强度</h3>
+  <h3>AI 强度：改的是搜索</h3>
   <table class="rule-table">
     <tr><th>档位</th><th>前瞻深度</th><th>每步思考上限</th></tr>
-    <tr><td>入门</td><td>4 层（2 步）</td><td>300 ms</td></tr>
-    <tr><td>标准</td><td>6 层（3 步）</td><td>800 ms</td></tr>
-    <tr><td>最强</td><td>8 层（4 步）</td><td>2500 ms</td></tr>
+    ${strengthRows}
   </table>
   <p class="rule-note">
     深度单位是"搜索树层数"：AI 走一步、随机生成一次，各算一层，所以看 N 步＝2N 层。
-    空格变少时它会自动加深（最高约 12 层）；时间只是上限，实际通常远低于它。
+    空格变少时它会自动加深（最高约 12 层）。时间只是上限，实测通常远低于它 ——
+    真正的瓶颈是深度，不是时间。
   </p>
+  <p class="rule-note">实测（中等难度，样本较小，仅供量级参考）：${strengthNotes}。</p>
   <p class="rule-note">
-    这个 AI 是"期望最大化搜索＋手写评分"。它的评分项包括：单调性、可合并对、
-    蛇形排布、最大块位置、空格数等。上一轮的基准：
-    标准档平均约 5 万，最强档在中等难度平均约 7 万、困难难度约 6 万。
+    这个 AI 是"期望最大化搜索＋手写评分"：评分项包括单调性、可合并对、蛇形排布、
+    最大块位置、空格数等。它不知道后面的方块会出什么，只能按概率求期望。
   </p>
+
+  <h3>AI 速度</h3>
+  <p class="rule-note">只影响"AI操作"连跑时每步之间的停顿，不影响 AI 的下棋水平。</p>
 
   <h3>快捷键</h3>
   <ul>
     <li><strong>方向键</strong> 或 <strong>W A S D</strong>：移动；手机上直接滑动</li>
-    <li><strong>R</strong> 新游戏 · <strong>U</strong> 撤销 · <strong>M</strong> 静音</li>
+    <li><strong>R</strong> 重来 · <strong>U</strong> 撤回 · <strong>M</strong> 音量</li>
     <li><strong>空格</strong>：让 AI 走一步</li>
   </ul>
 `;
+}
 
 function showRules() {
-  el.rulesBody.innerHTML = RULES_HTML;
+  el.rulesBody.innerHTML = rulesHtml();
   el.rulesModal.classList.add('show');
 }
 
@@ -521,7 +548,6 @@ function newGame() {
   maxCelebrated = 0;
   celebrated2048 = false;
   renderer.reset(game.board, { score: game.score, best });
-  refreshDifficultyNotice();
   refreshBestHighlight();
   refreshControls();
   celebration.relayout();
@@ -546,30 +572,10 @@ function currentDifficulty() {
 }
 
 /**
- * 非标准难度时在页面上**明确说明**分数不可与基准比较。
- *
- * 这一条不能省：难度改的是生成规则，简单档分数天然更高。
- * 不提示的话，用户会把"简单档刷出的高分"当成 AI 变强了。
- */
-function refreshDifficultyNotice() {
-  const value = currentDifficulty();
-  // ⚠️ 这里**曾经**还有一段写 `el.difficultyNote` 的代码，而 HTML 里从来没有
-  // `#difficulty-note` 这个元素 —— 那段是死代码，靠 `if (el.difficultyNote)`
-  // 兜着所以不报错，只是永远不执行。
-  // 难度的即时说明由下面这个 `#difficulty-notice`（真实存在）承担，
-  // 下拉框里每一项的说明由 config.js 的 note 通过 option 文本给出。
-  if (!el.difficultyNotice) return;
-
-  if (isStandardDifficulty(value)) {
-    el.difficultyNotice.classList.add('hidden');
-    el.difficultyNotice.textContent = '';
-    return;
-  }
-  el.difficultyNotice.textContent =
-    `当前难度「${difficultyLabel(value)}」改的是生成规则，` +
-    `不是标准 2048 —— 本局分数不可与标准难度或历史最高分比较。`;
-  el.difficultyNotice.classList.remove('hidden');
-}
+// 难度提示条（#difficulty-notice）已按用户要求删除 ——
+// "非标准难度的分数不可与基准比较"这条说明移进规则弹窗。
+// 这里保留一行注释而不是留一个空函数：死代码会让人以为还有行为。
+// 一并去掉的还有它引用的 isStandardDifficulty 导入（现已无人使用）。
 
 function toggleMute() {
   const muted = sound.toggleMuted();

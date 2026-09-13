@@ -42,9 +42,18 @@ function check(name, ok, detail) {
 
 async function main() {
   console.log('\n[1] 强度档位定义');
-  check('三档存在：入门 / 标准 / 最强', Object.keys(STRENGTH).length === 3, Object.keys(STRENGTH).join(','));
+  check('三档存在：入门 / 中等 / 最强', Object.keys(STRENGTH).length === 3, Object.keys(STRENGTH).join(','));
+  // 用词必须与难度档区分开（用户指定）：难度是简单/标准/困难，
+  // 强度是入门/中等/最强。两个下拉框并排在同一行，用词重复会让人分不清。
   check(
-    '深度递增（入门 < 标准 < 最强）',
+    '强度用词是 入门/中等/最强（与难度的 简单/标准/困难 区分）',
+    STRENGTH.beginner.label === '入门' &&
+      STRENGTH.standard.label === '中等' &&
+      STRENGTH.expert.label === '最强',
+    [STRENGTH.beginner.label, STRENGTH.standard.label, STRENGTH.expert.label].join(' / ')
+  );
+  check(
+    '深度递增（入门 < 中等 < 最强）',
     STRENGTH.beginner.depth < STRENGTH.standard.depth && STRENGTH.standard.depth < STRENGTH.expert.depth,
     `${STRENGTH.beginner.depth} / ${STRENGTH.standard.depth} / ${STRENGTH.expert.depth}`
   );
