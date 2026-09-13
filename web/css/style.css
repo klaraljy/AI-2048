@@ -29,6 +29,14 @@
   --accent: #52bdab;
   --radius: 8px;
   --gap: 12px;
+  /* 棋盘边长 —— **控件行、提示行、棋盘共用这一个数**。
+     ⚠️ 这三个元素原来各自写 `width: min(100%, 452px)`：.app 宽 560px，
+     所以它们都变成 452px 并从 .app 左边缘排起；而棋盘外面套了 .board-row
+     的居中 flex（两侧烟花轨道占 200px 时棋盘被挤到右边），于是棋盘比控件
+     行**偏右 54px**。
+     现在统一用 `max-width: var(--board-size)` + `margin-inline: auto`：
+     与 .app 内边缘对齐（也就是与棋盘对齐），将来改棋盘大小不会再错位。 */
+  --board-size: 452px;
 }
 
 * {
@@ -74,14 +82,28 @@ body {
 /* 两个分数框靠在一起、整体偏中间 */
 .scores {
   display: flex;
+  /* ⚠️ 必须显式 flex-start：默认 stretch 会把两个框拉到**同高**，
+     而那个高度由最高的那个（或祖先）决定 —— 于是"框比内容高 5px"、
+     改内边距和字号都不见效。用户报"分数框明显太高"时我卡在这里很久。 */
+  align-items: flex-start;
   gap: 10px;
   margin-right: 8%;
 }
 
 .score-box {
   min-width: 108px;
-  /* 下内边距给足：数字滚动的容器有固定高度，padding 不够时底部会被裁 */
-  padding: 7px 14px 11px;
+  /* 高度：用户要求"矮一点，不要比标题还高"。原来 69px（标题 46px，高出 23px）。
+     69 的来源是三处**空白**，不是字号：
+       上内边距 7 + 下内边距 11（不对称 → 内容整体偏上）
+       + 标签行高 14 + 滚轮区 36（数字行高只有 31.2，底下空 4.8）
+     现在逐项压到实测最小值，**数字字号 24px 与标签字号 11px 都不动**：
+       内边距 4（上下对称，内容自然上下居中）
+       + 标签行高 14（实测 11px 中文的文本高度就是 14px，压到 12 会裁字）
+       + 滚轮区 31（= 数字行高 31.2 取整）
+       = 53px。
+     53 / 46 = 比标题高 7px（原来高 23px）。
+     这些都是**浏览器实测值**，不是估算 —— 见 _tmp 的 probe-label.mjs。 */
+  padding: 4px 14px;
   border-radius: var(--radius);
   background: var(--panel);
   color: var(--panel-text);
@@ -92,6 +114,9 @@ body {
 .score-label {
   display: block;
   font-size: 11px;
+  /* 14px = 11px 中文的实测文本高度。压到 12px 时文字会溢出 2px 被裁掉，
+     所以这里不能再小；要再矮只能减内边距（已经只剩 4px）。 */
+  line-height: 14px;
   letter-spacing: 0.08em;
   opacity: 0.9;
   white-space: nowrap;
@@ -114,12 +139,15 @@ body {
 }
 
 /* 滚轮容器：数字在其中滚动，超出部分裁掉。
-   高度按数字的实际行高给足（24px × 1.3 ≈ 31.2），留 36px —— 之前写成
-   1.35em 是按父级 16px 算的（只有 21.6px），数字底部被裁掉一截。 */
+   高度必须**刚好装下数字行高**：24px × 1.3 = 31.2px，写小了数字底部会被裁。
+   ⚠️ 这个数改过两次教训 —— 一次是写成 1.35em（按父级 16px 算，只有 21.6px）
+   把数字裁了；这次是从 36px 收到 31px（用户嫌框太高），同样要盯住裁切。
+   31 比 31.2 只小 0.2px，靠数字自身的 line box 兜住，实测不裁
+   （见 _tmp 的 ui-check 量到的 scrollHeight vs clientHeight）。 */
 .score-roll {
   position: relative;
   overflow: hidden;
-  height: 36px;
+  height: 31px;
 }
 
 /* 滚出画面的旧数字：绝对定位叠在同一位置，滚完即删 */
@@ -157,26 +185,30 @@ body {
 /* ------------------------------------------------------- 控件（两行，用户指定） */
 
 /* 第一行：难度 / AI 强度 / AI 速度 + 规则按钮。
-   ⚠️ **不换行**（用户要求"全部挤在一行"），宽度与棋盘对齐 ——
-   三个下拉框均分空间（flex: 1 1 0），规则按钮按内容宽度。 */
+   ⚠️ **不换行**（用户要求"全部挤在一行"），宽度与棋盘一致：
+   `max-width: var(--board-size)` + 居中（见 :root 里 --board-size 的说明）。 */
 .controls {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 10px;
-  width: min(100%, 452px);
+  width: 100%;
+  max-width: var(--board-size);
+  margin-inline: auto;
 }
 
 /* 第二行：五个带文字的按钮。
    与第一行**同宽**（用户要求）：第一行已经撑到棋盘宽度，第二行再按内容宽度
-   左对齐就会在右边留一大片空白。所以同样设成棋盘宽度，并让五个按钮均分
-   拉满（flex: 1 1 auto）—— 右边缘与棋盘齐平，点按面积也更大。 */
+   左对齐就会在右边留一大片空白。所以同样限制到棋盘宽度并居中，五个按钮
+   均分拉满（flex: 1 1 auto）—— 右边缘与棋盘齐平，点按面积也更大。 */
 .controls-row2 {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 10px;
-  width: min(100%, 452px);
+  width: 100%;
+  max-width: var(--board-size);
+  margin-inline: auto;
 }
 
 .controls-row2 .icon-btn {
@@ -590,7 +622,8 @@ button.active svg {
 .board-wrap {
   position: relative;
   flex: 0 0 auto;
-  width: min(100%, 452px);
+  width: 100%;
+  max-width: var(--board-size);
   aspect-ratio: 1 / 1;
   padding: var(--gap);
   border-radius: 12px;
@@ -863,9 +896,15 @@ button.active svg {
 }
 
 /* 快捷键提示。⚠️ 这不是"控件备注"—— 用户要求删的是下拉选项里的备注，
-   操作提示要留着（我先前误删过一次，已恢复）。 */
+   操作提示要留着（我先前误删过一次，已恢复）。
+   宽度与控件行、棋盘一致（--board-size），并且**文字居中排**（用户指定的 A 方案：
+   整段文字在这 452px 里居中，而不是容器对齐、文字左起）。 */
 .hint {
   margin-top: 14px;
+  width: 100%;
+  max-width: var(--board-size);
+  margin-inline: auto;
+  text-align: center;
   font-size: 12px;
   line-height: 1.7;
   color: rgba(255, 255, 255, 0.84);

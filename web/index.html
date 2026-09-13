@@ -195,9 +195,15 @@
 
       <!-- 快捷键提示。这一段保留：它属于"操作提示"，不是控件备注。
            规则弹窗里另有一份更完整的说明。 -->
+      <!--
+        快捷键提示。宽度与控件行、棋盘一致并**居中排**（用户指定）：
+        见 style.css 里 .hint 的 max-width / text-align。
+        「移动，手机上直接滑动。」已按用户要求删掉 —— WASD 与方向键本身就
+        表示移动，这句是多余的说明。
+      -->
       <p class="hint">
         <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> 或
-        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动，手机上直接滑动。
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>　
         <kbd>R</kbd> 重开，<kbd>U</kbd> 撤销，<kbd>M</kbd> 静音，
         <kbd>空格</kbd> 让 AI 走一步。
       </p>
