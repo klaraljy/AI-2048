@@ -323,6 +323,10 @@ struct Options {
       weights->smoothness = value;
     } else if (key == "merge") {
       weights->merge = value;
+    } else if (key == "mergeval") {
+      // 按结果牌值加权的合并潜力。原始量级比 merge 大得多
+      // （一次 512 合并就是 1024），所以权重该比 merge 小几个数量级。
+      weights->merge_value = value;
     } else if (key == "corner") {
       weights->corner = value;
     } else if (key == "snake") {
@@ -620,13 +624,21 @@ int RunSelfCheck(const Options& options) {
   }
 
   std::string error;
-  const auto seeds = ReadSeeds(options.seeds_path, &error);
+  auto seeds = ReadSeeds(options.seeds_path, &error);
   if (!seeds.has_value()) {
     std::cerr << error << "\n";
     return 1;
   }
+  // ⚠️ `--limit` 曾经在这里**被静默忽略** —— 它跑的是种子集里的全部局数。
+  // 后果是一次"我想快速验 6 局"的调用实际跑了 200 局（每个种子跑两趟），
+  // 从几分钟变成将近一小时，而且看起来像卡死。
+  // 凡是接受 `--seeds` 的子命令都必须尊重 `--limit`（bench / compare 都遵守）。
+  if (options.limit > 0 && static_cast<std::size_t>(options.limit) < seeds->size()) {
+    seeds->resize(static_cast<std::size_t>(options.limit));
+  }
 
   std::cout << "selfcheck: 种子集 " << options.seeds_path << "，共 " << seeds->size() << " 局"
+            << "（每局跑两趟，合计 " << seeds->size() * 2 << " 局）"
             << "，深度 " << options.depth;
   if (options.time_budget_ms > 0) {
     std::cout << "，时间预算 " << options.time_budget_ms << "ms（会引入机器相关差异）";
@@ -637,9 +649,16 @@ int RunSelfCheck(const Options& options) {
   const std::size_t table_capacity = MakeTableCapacity(options);
   const bool symmetry_keys = MakeUseSymmetryKeys(options);
   int failures = 0;
+  std::size_t checked = 0;
   for (const std::uint64_t seed : *seeds) {
     const PlayOutcome first = PlayOneGame(seed, config, table_capacity, symmetry_keys);
     const PlayOutcome second = PlayOneGame(seed, config, table_capacity, symmetry_keys);
+    ++checked;
+    // 进度必须打出来：这个子命令每局跑两趟，全量种子集要接近一小时，
+    // 没有输出的话会被误当成卡死（实际发生过）。
+    if (checked % 10 == 0 || checked == seeds->size()) {
+      std::cout << "\r  进度 " << checked << "/" << seeds->size() << std::flush;
+    }
     if (first.final_state != second.final_state) {
       ++failures;
       std::cerr << "  ✗ seed " << seed << " 两次运行结果不一致\n"
@@ -653,14 +672,14 @@ int RunSelfCheck(const Options& options) {
   }
 
   if (failures != 0) {
-    std::cerr << "selfcheck 失败: " << failures << " 局不可复现\n";
+    std::cerr << "\nselfcheck 失败: " << failures << " 局不可复现\n";
     if (options.time_budget_ms > 0) {
       std::cerr << "提示: 使用了 --time，超时会按机器速度截断搜索深度。\n"
                 << "      要验证确定性请去掉 --time。\n";
     }
     return 1;
   }
-  std::cout << "selfcheck 通过: " << seeds->size() << " 局全部可复现（逐字节一致）\n";
+  std::cout << "\nselfcheck 通过: " << seeds->size() << " 局全部可复现（逐字节一致）\n";
   return 0;
 }
 

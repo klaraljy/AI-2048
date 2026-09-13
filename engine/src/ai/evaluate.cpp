@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 
 #include "core/board.h"
 
@@ -188,10 +189,35 @@ inline constexpr int kSnakeWeightSum = 16 * 17 / 2;  // = 136
   return count;
 }
 
+// 合并潜力（按价值）：相邻等值对**合并出来的牌值**之和。
+//
+// 与 RowMergePotential 的区别只在加权：数量版每一对都算 1，这里按结果给分。
+//
+// 权重函数选 **√(结果牌值)** 而不是牌值本身，理由：
+//   - 用牌值本身：合两个 512 得 1024 分、合两个 4 得 8 分，**差 128 倍**。
+//     这一项会压倒其它所有项，AI 会为了攒大合并而放弃腾空间，
+//     而 2048 里"随时能合"往往比"攒一个大的"更重要。
+//   - 用 √牌值：同样两对只差**约 11 倍**（32 对 2.8）。保住了"大合并更值钱"
+//     这个正确的序，又不会把量级推到失控。
+// 游戏真正的计分是牌值本身，但那衡量的是**最终得分**，不是**位置好坏** ——
+// 用它当启发式等于直接优化分数，反而丢了"保持结构"这层信息。
+[[nodiscard]] float RowMergeValue(PackedRow row) {
+  float total = 0.0F;
+  for (int i = 0; i + 1 < kBoardSize; ++i) {
+    const int left = static_cast<int>((row >> (kBitsPerCell * i)) & 0xFu);
+    const int right = static_cast<int>((row >> (kBitsPerCell * (i + 1))) & 0xFu);
+    if (left != 0 && left == right) {
+      total += std::sqrt(static_cast<float>(ExponentToValue(left + 1)));
+    }
+  }
+  return total;
+}
+
 struct PerRowTables {
   std::array<float, kRowStates> monotonicity{};
   std::array<float, kRowStates> smoothness{};
   std::array<float, kRowStates> merge{};
+  std::array<float, kRowStates> merge_value{};
 };
 
 [[nodiscard]] const PerRowTables& Tables() {
@@ -202,6 +228,7 @@ struct PerRowTables {
       t.monotonicity[state] = RowMonotonicity(row);
       t.smoothness[state] = RowSmoothness(row);
       t.merge[state] = RowMergePotential(row);
+      t.merge_value[state] = RowMergeValue(row);
     }
     return t;
   }();
@@ -230,6 +257,7 @@ struct RawTerms {
   float monotonicity = 0.0F;
   float smoothness = 0.0F;
   float merge = 0.0F;
+  float merge_value = 0.0F;
   float snake = 0.0F;
   float snake_rank = 0.0F;
   int max_exponent = 0;
@@ -362,6 +390,7 @@ struct RawTerms {
     terms.monotonicity += tables.monotonicity[packed];
     terms.smoothness += tables.smoothness[packed];
     terms.merge += tables.merge[packed];
+    terms.merge_value += tables.merge_value[packed];
     terms.gradient += RowGradient(packed);
   }
 
@@ -372,6 +401,7 @@ struct RawTerms {
     terms.monotonicity += tables.monotonicity[packed];
     terms.smoothness += tables.smoothness[packed];
     terms.merge += tables.merge[packed];
+    terms.merge_value += tables.merge_value[packed];
     terms.gradient += RowGradient(packed);
   }
 
@@ -426,6 +456,7 @@ struct RawTerms {
   out.monotonicity = terms.monotonicity * weights.monotonicity;
   out.smoothness = terms.smoothness * weights.smoothness;
   out.merge = terms.merge * weights.merge;
+  out.merge_value = terms.merge_value * weights.merge_value;
   out.snake = terms.snake * weights.snake;
   out.snake_rank = terms.snake_rank * weights.snake_rank;
 
@@ -474,9 +505,9 @@ struct RawTerms {
   // 梯度：奖励沿一个方向递减的排布。
   out.gradient = terms.gradient * weights.gradient;
 
-  out.total = out.empty + out.monotonicity + out.smoothness + out.merge + out.corner + out.snake +
-              out.snake_rank + out.max_tile + out.corner_control + out.edge_support + out.gradient +
-              out.mobility + out.islands;
+  out.total = out.empty + out.monotonicity + out.smoothness + out.merge + out.merge_value +
+              out.corner + out.snake + out.snake_rank + out.max_tile + out.corner_control +
+              out.edge_support + out.gradient + out.mobility + out.islands;
   return out;
 }
 

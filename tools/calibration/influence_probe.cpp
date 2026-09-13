@@ -56,11 +56,62 @@ struct Acc {
 
 }  // namespace
 
+// 解析 "key=value,key=value" 形式的权重覆盖。键与 CLI 的 --weights 一致。
+void ApplyOverrides(const std::string& spec, Weights* w) {
+  std::size_t pos = 0;
+  while (pos < spec.size()) {
+    const std::size_t comma = spec.find(',', pos);
+    const std::string token =
+        spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+    pos = (comma == std::string::npos) ? spec.size() : comma + 1;
+    if (token.empty()) continue;
+    const std::size_t eq = token.find('=');
+    if (eq == std::string::npos) continue;
+    const std::string key = token.substr(0, eq);
+    const float value = std::stof(token.substr(eq + 1));
+    if (key == "empty")
+      w->empty = value;
+    else if (key == "empty_late")
+      w->empty_late = value;
+    else if (key == "mono")
+      w->monotonicity = value;
+    else if (key == "smooth")
+      w->smoothness = value;
+    else if (key == "merge")
+      w->merge = value;
+    else if (key == "mergeval")
+      w->merge_value = value;
+    else if (key == "corner")
+      w->corner = value;
+    else if (key == "snake")
+      w->snake = value;
+    else if (key == "snakerank")
+      w->snake_rank = value;
+    else if (key == "maxtile")
+      w->max_tile = value;
+    else if (key == "cc")
+      w->corner_control = value;
+    else if (key == "edge")
+      w->edge_support = value;
+    else if (key == "grad")
+      w->gradient = value;
+    else if (key == "mob")
+      w->mobility = value;
+    else if (key == "island")
+      w->islands = value;
+    else
+      std::fprintf(stderr, "未知权重键: %s\n", key.c_str());
+  }
+}
+
 int main(int argc, char** argv) {
   const int depth = (argc > 1) ? std::atoi(argv[1]) : 4;
   const int games = (argc > 2) ? std::atoi(argv[2]) : 3;
+  const std::string spec = (argc > 3) ? argv[3] : "";
 
-  const Weights weights;
+  Weights weights;
+  ApplyOverrides(spec, &weights);
+  std::printf("权重覆盖: %s\n", spec.empty() ? "（默认值）" : spec.c_str());
   Acc acc;
 
   for (int seed = 1; seed <= games; ++seed) {
@@ -96,6 +147,7 @@ int main(int argc, char** argv) {
         measure("monotonicity", &EvaluationBreakdown::monotonicity);
         measure("smoothness", &EvaluationBreakdown::smoothness);
         measure("merge", &EvaluationBreakdown::merge);
+        measure("merge_value", &EvaluationBreakdown::merge_value);
         measure("snake", &EvaluationBreakdown::snake);
         measure("corner", &EvaluationBreakdown::corner);
         measure("corner_control", &EvaluationBreakdown::corner_control);
