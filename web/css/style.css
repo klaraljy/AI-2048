@@ -37,6 +37,21 @@
      现在统一用 `max-width: var(--board-size)` + `margin-inline: auto`：
      与 .app 内边缘对齐（也就是与棋盘对齐），将来改棋盘大小不会再错位。 */
   --board-size: 452px;
+  /* 标题里"2"的字形左边自带多少留白（像素）。
+     定义：**字形墨迹左边界 − 文本盒左边界**，实测约 3px。
+     ⚠️ 不要用"元素宽度 − 文字宽度"去算它（202 − 154 = 48）：那个差里混进了
+     右边留白和字距，照它做会把整个标题往左推 45px，看上去更偏。我第一次就
+     是这么算错的。
+     换字体或改字号（--title-font-size）后要重量：_tmp 的 measure-bearing.mjs。 */
+  --title-bearing: 3px;
+  --title-font-size: 64px;
+  /* 棋盘两侧烟花轨道的宽度上限（.fx 的 max-width）。
+     ⚠️ 这个变量**必须存在**：我改注释时误删过一次它的定义，于是
+     `.fx { max-width: var(--fx-track) }` 里的 var() 解析失败，
+     **整条 max-width 在计算值阶段作废、回退成 `none`**，canvas 就按
+     width 属性（400px）撑开，页面多出 180px 横向滚动。
+     记住：用 var() 的声明，变量没定义 ≠ 忽略这一句，而是整条声明失效。 */
+  --fx-track: 100px;
 }
 
 * {
@@ -68,15 +83,29 @@ body {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
+  /* 与棋盘**同一套居中规则**：同样的 max-width + margin-inline:auto。
+     这样标题的左边界由浏览器算出来，与棋盘严格一致 ——
+     不要去手算"棋盘被两侧烟花轨道挤进了多少"：那个偏移量随视口变化
+     （实测 900px 视口下 54px、560px 下 38px、500px 下 8px、≤420px 下 0），
+     任何写死的常量都会在别的宽度上错位。 */
+  width: 100%;
+  max-width: var(--board-size);
+  margin-inline: auto;
 }
 
 .title {
   margin: 0;
-  font-size: 46px;
+  /* 用户指定 64px（见 :root 的 --title-font-size） */
+  font-size: var(--title-font-size);
   font-weight: 800;
   letter-spacing: -1px;
   line-height: 1;
   color: var(--text-light);
+  /* 让"2048"里那个 **2 的墨迹**贴着棋盘左边界。
+     标题元素（.topbar 的左边）已经与棋盘左对齐，剩下的只是字体给"2"留的
+     那 3px 字面留白 —— 用户要的是"2 对齐棋盘左边"，所以把这 3px 抵消掉。
+     用 margin 而不是负 padding：负 padding 在部分浏览器会被忽略。 */
+  margin-left: calc(-1 * var(--title-bearing));
 }
 
 /* 两个分数框靠在一起、整体偏中间 */
@@ -614,7 +643,7 @@ button.active svg {
 /* 两侧的庆祝轨道：不吃点击事件 */
 .fx {
   flex: 1 1 50px;
-  max-width: 100px;
+  max-width: var(--fx-track);
   height: 200px;
   pointer-events: none;
 }
