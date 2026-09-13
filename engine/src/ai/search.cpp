@@ -4,9 +4,13 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <vector>
+
+#include "core/rng.h"
 
 namespace ai2048 {
 
@@ -245,11 +249,94 @@ namespace {
   return Evaluate(board, config.weights);
 }
 
+/**
+ * 选出 chance 节点这一层要展开的出生位置。
+ *
+ * 两段式（见 SearchConfig::chance_important_cells 的说明）：
+ *   1. **重要格**：按权重降序取前 K 个 —— 确定性，保证最该看的分支一定被看。
+ *   2. **抽样格**：从剩下的空格里按权重无偏抽 M 个 —— 随机，但用
+ *      `sampling_rng`（按 (棋盘, 深度) 播种的独立 RNG），所以同一局面
+ *      永远得到同一棵树；也**不消耗游戏 RNG**。
+ *
+ * 抽样那一半的意义：保证冷门位置**不是永远不看**，只是"这次没看"。
+ * 只取 top-K 会有系统性盲区 —— 某些空格在整个搜索里永远不会被考虑。
+ *
+ * @param weight_of  取某格权重（调用方已归一化，只用于比较大小与抽样）
+ * @param out        输出缓冲区，长度至少 kCellCount
+ * @param out_count  输出：选中的格子数
+ */
+void SelectChanceCells(const SearchConfig& config, const std::array<int, kCellCount>& empty_cells,
+                       int empty_count, const std::function<double(int)>& weight_of,
+                       Rng* sampling_rng, int* out, int* out_count) {
+  *out_count = 0;
+  if (empty_count <= 0) return;
+
+  const int important = std::max(0, config.chance_important_cells);
+  const int sampled = std::max(0, config.chance_sample_cells);
+
+  // --- 1) 重要格：按权重降序，稳定排序（权重相同时按索引，保证确定性）---------
+  std::array<int, kCellCount> order{};
+  for (int i = 0; i < empty_count; ++i)
+    order[static_cast<std::size_t>(i)] = empty_cells[static_cast<std::size_t>(i)];
+  std::stable_sort(order.begin(), order.begin() + empty_count,
+                   [&](int a, int b) { return weight_of(a) > weight_of(b); });
+
+  bool taken[kCellCount] = {};
+  const int take_important = std::min(important, empty_count);
+  for (int i = 0; i < take_important; ++i) {
+    out[(*out_count)++] = order[static_cast<std::size_t>(i)];
+    taken[order[static_cast<std::size_t>(i)]] = true;
+  }
+
+  // --- 2) 抽样格：从剩下的空格里按权重无偏抽 ----------------------------------
+  // 权重的绝对大小不重要（只用来当抽样概率），所以直接用 weight_of 的原值。
+  const int remaining = empty_count - take_important;
+  const int take_sampled = std::min(sampled, remaining);
+  if (take_sampled > 0) {
+    std::array<int, kCellCount> pool{};
+    std::array<double, kCellCount> pool_weight{};
+    int pool_size = 0;
+    double pool_total = 0.0;
+    for (int i = take_important; i < empty_count; ++i) {
+      const int index = order[static_cast<std::size_t>(i)];
+      const double w = weight_of(index);
+      if (w <= 0.0) continue;
+      pool[static_cast<std::size_t>(pool_size)] = index;
+      pool_weight[static_cast<std::size_t>(pool_size)] = w;
+      pool_total += w;
+      ++pool_size;
+    }
+
+    for (int slot = 0; slot < take_sampled && pool_size > 0; ++slot) {
+      // 逆变换抽样：一次随机数按累积权重落点。
+      const std::uint64_t roll = sampling_rng->NextBounded(1'000'000);
+      const double target = (static_cast<double>(roll) / 1'000'000.0) * pool_total;
+      int pick = pool_size - 1;  // 边界兜底
+      double acc = 0.0;
+      for (int i = 0; i < pool_size; ++i) {
+        acc += pool_weight[static_cast<std::size_t>(i)];
+        if (target < acc) {
+          pick = i;
+          break;
+        }
+      }
+      const int index = pool[static_cast<std::size_t>(pick)];
+      if (taken[index]) continue;  // 理论上不会发生；保持健壮
+      out[(*out_count)++] = index;
+      taken[index] = true;
+      // 从池里移除，保证不重复抽到同一格。
+      pool_total -= pool_weight[static_cast<std::size_t>(pick)];
+      pool[pick] = pool[pool_size - 1];
+      pool_weight[pick] = pool_weight[static_cast<std::size_t>(pool_size - 1)];
+      --pool_size;
+    }
+  }
+}
+
 class Searcher {
  public:
   Searcher(const SearchConfig& config, TranspositionTable* table)
       : config_(config), table_(table) {}
-
   [[nodiscard]] double ElapsedMs() const noexcept {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_)
         .count();
@@ -366,9 +453,34 @@ class Searcher {
       return cell_weight[static_cast<std::size_t>(index)] / weight_total;
     };
 
-    int limit = empty_count;
-    if (config_.chance_sample_limit > 0) {
-      limit = std::min(empty_count, config_.chance_sample_limit);
+    // ---------------------------------------------------------------------------
+    // 选出这一层要展开的出生位置
+    // ---------------------------------------------------------------------------
+    // 优先用"重要格 + 抽样格"（见 SearchConfig::chance_important_cells 的说明），
+    // 它把分支因子从"空格数×2"压到约 16，从而让树能长到 5~6 步；
+    // 两者都为 0 时才退回旧的"枚举全部空格"。
+    int selected[kCellCount];
+    int selected_count = 0;
+    if (config_.chance_important_cells > 0 || config_.chance_sample_cells > 0) {
+      // ⚠️ 抽样 RNG 必须按 **(这个棋盘, 这个深度)** 重新播种。
+      // 不能让它顺着搜索顺序一路用下去：那样"抽到哪几个格"会取决于
+      // 这个节点在整棵树里的**到达顺序**，而到达顺序又受置换表命中、
+      // 迭代加深、时间截断影响 —— 结果就是"同一次搜索重跑结果不同"。
+      // 按棋盘播种之后，同一局面的同一层永远抽到同一批格子，
+      // 搜索是纯函数，确定性保住了。
+      sampling_rng_ = Rng(board ^ (static_cast<std::uint64_t>(depth) * 0x9E37'79B9'7F4A'7C15ULL) ^
+                          0xA5A5'5A5A'1234'5678ULL);
+      SelectChanceCells(
+          config_, empty_cells, empty_count, [&](int index) { return per_cell_weight(index); },
+          &sampling_rng_, selected, &selected_count);
+    } else {
+      selected_count = empty_count;
+      for (int i = 0; i < empty_count; ++i) {
+        selected[i] = empty_cells[static_cast<std::size_t>(i)];
+      }
+      if (config_.chance_sample_limit > 0) {
+        selected_count = std::min(empty_count, config_.chance_sample_limit);
+      }
     }
 
     // 2 与 4 的概率按**当前难度**取，与实际生成规则一致（见 FourSpawnProbability）。
@@ -378,8 +490,8 @@ class Searcher {
     float total = 0.0F;
     double weight_sum = 0.0;
 
-    for (int i = 0; i < limit; ++i) {
-      const int index = empty_cells[static_cast<std::size_t>(i)];
+    for (int i = 0; i < selected_count; ++i) {
+      const int index = selected[i];
       const double cell_share = per_cell_weight(index) * probability;
       for (int exponent = 1; exponent <= 2; ++exponent) {
         const double branch_probability = cell_share * (exponent == 2 ? p_four : p_two);
@@ -415,6 +527,11 @@ class Searcher {
   TranspositionTable* table_;
   std::chrono::steady_clock::time_point start_ = std::chrono::steady_clock::now();
   bool timed_out_ = false;
+
+  // 选"抽样格"用的 RNG。**独立于游戏 RNG**，按 (棋盘, 深度) 播种 ——
+  // 所以同一局面永远得到同一棵树，"同种子逐字节一致"不受影响；
+  // 也绝不消耗游戏 RNG 的随机流（否则会改变后续生成）。
+  Rng sampling_rng_{0};
 };
 
 // 根节点用的快速估值：只看形状，用于给方向排序与兜底。

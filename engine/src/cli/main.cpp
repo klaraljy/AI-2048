@@ -59,6 +59,26 @@ struct Options {
    * 而不是我凭"文档说该更深"就替用户决定。
    */
   int max_depth = 0;
+
+  /**
+   * 按重要性选择展开的出生位置（见 SearchConfig::chance_important_cells）。
+   *
+   *   -1 = 不改（用默认值）；0 = 关闭该段；>0 = 该段展开几个。
+   * 两个都设成 0 就是"枚举全部空格"的旧行为 —— 对拍时用它做对照。
+   */
+  int chance_important = -1;
+  int chance_sample = -1;
+
+  /**
+   * 概率剪枝阈值，单位**毫点**（5 = 0.005，0.5 = 0.0005）。
+   *
+   * 用整数毫点而不是浮点：命令行浮点解析会引入不确定性，
+   * 而"同种子逐字节一致"要求配置完全相同才可比。
+   * 0 = 不改（用默认值）；负数 = 关闭剪枝。
+   */
+  int cutoff_milli = -9999;
+  /** 单调性回到旧行为（空位当 0）。仅供对拍，见 --mono-legacy 的说明。 */
+  bool mono_legacy = false;
   int time_budget_ms = 0;
   int chance_limit = 0;
   bool use_tt = true;
@@ -138,6 +158,24 @@ struct Options {
   int time_budget_b = -1;
   bool has_weight_b = false;
   ai2048::Weights weight_overrides_b;
+  /**
+   * B 侧的 chance 展开参数；-1 = 与 A 侧相同。
+   *
+   * 为什么必须有：`compare` 的价值就在于"只改一个变量"，而 chance 展开方式
+   * 是 `SearchConfig` 的字段、不是权重，光靠 `--weights-b` 改不到。
+   * 先前正是因为这个缺口，把"采样开关"和"权重改动"混在同一次对拍里，
+   * 两轮测量全部作废。
+   */
+  int chance_important_b = -1;
+  int chance_sample_b = -1;
+
+  /**
+   * B 侧是否用单调性的旧行为（空位当 0）。-1 = 与 A 侧相同。
+   *
+   * 必须有它：`--mono-legacy` 是全局开关，用它做对拍会把 A、B 两侧一起改掉，
+   * 对照直接失效（踩过一次）。这条与 chance 那两项是同一类缺口。
+   */
+  int mono_legacy_b = -1;
 };
 // 解析 "key=value,key=value,..."。键用短名，便于命令行书写。
 [[nodiscard]] bool ParseWeightOverrides(const std::string& spec, ai2048::Weights* weights);
@@ -196,6 +234,24 @@ struct Options {
       if (!take_int(&options->time_budget_ms)) return false;
     } else if (arg == "--chance-limit") {
       if (!take_int(&options->chance_limit)) return false;
+    } else if (arg == "--chance-important") {
+      // 每层确定性展开的"重要出生格"个数（0 关闭）。
+      if (!take_int(&options->chance_important)) return false;
+    } else if (arg == "--chance-sample") {
+      // 每层再按权重无偏抽样的个数（0 关闭）。
+      if (!take_int(&options->chance_sample)) return false;
+    } else if (arg == "--cutoff") {
+      // 概率剪枝阈值（毫点：5 = 0.005）。越小剪得越少、树越深。
+      // 用整数毫点是为了避免命令行浮点解析带来的不确定性。
+      if (!take_int(&options->cutoff_milli)) return false;
+    } else if (arg == "--mono-legacy") {
+      // 单调性回到"空位当 0 参与比较"的旧行为。**仅供对拍**：
+      // 跳过空位会整体抬高单调性总分，等价于隐式放大 mono 权重，
+      // 所以要把这个"修复"当成一次权重改动来验证（见 evaluate.cpp）。
+      options->mono_legacy = true;
+    } else if (arg == "--mono-legacy-b") {
+      // 只改 B 侧 —— 做单变量对照用（`--mono-legacy` 会同时改两侧）。
+      options->mono_legacy_b = 1;
     } else if (arg == "--no-tt") {
       options->use_tt = false;
     } else if (arg == "--tt-entries") {
@@ -281,6 +337,10 @@ struct Options {
         return false;
       }
       options->has_weight_b = true;
+    } else if (arg == "--chance-important-b") {
+      if (!take_int(&options->chance_important_b)) return false;
+    } else if (arg == "--chance-sample-b") {
+      if (!take_int(&options->chance_sample_b)) return false;
     } else {
       std::cerr << "未知选项: " << arg << "\n";
       return false;
@@ -366,8 +426,19 @@ struct Options {
     // 上限不能低于基础深度，否则 clamp 会把基础深度也一起压下去。
     config.max_depth = std::max(config.max_depth, config.base_depth);
   }
+  if (options.mono_legacy) ai2048::SetMonotonicitySkipsEmptyForTesting(false);
   config.time_budget_ms = options.time_budget_ms;
   config.chance_sample_limit = options.chance_limit;
+  if (options.chance_important >= 0) config.chance_important_cells = options.chance_important;
+  if (options.chance_sample >= 0) config.chance_sample_cells = options.chance_sample;
+  if (options.cutoff_milli != -9999) {
+    if (options.cutoff_milli < 0) {
+      config.enable_probability_cutoff = false;
+    } else {
+      config.enable_probability_cutoff = true;
+      config.probability_cutoff = static_cast<double>(options.cutoff_milli) / 1000.0;
+    }
+  }
   config.weights = options.weight_overrides;
   // AI 的**世界模型**必须与实际游戏的生成规则一致：
   // 不传的话 AI 一律按全盘均匀评估，hard 档下会低估
@@ -891,6 +962,8 @@ int RunCompare(const Options& options) {
   if (options.depth_b > 0) config_b.base_depth = options.depth_b;
   if (options.time_budget_b >= 0) config_b.time_budget_ms = options.time_budget_b;
   if (options.has_weight_b) config_b.weights = options.weight_overrides_b;
+  if (options.chance_important_b >= 0) config_b.chance_important_cells = options.chance_important_b;
+  if (options.chance_sample_b >= 0) config_b.chance_sample_cells = options.chance_sample_b;
 
   std::string net_error;
   auto loaded = ai2048::learn::LoadNetworkFromFile(options.net_file, &net_error);

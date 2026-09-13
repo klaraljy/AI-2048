@@ -140,15 +140,26 @@ inline constexpr int kSnakeWeightSum = 16 * 17 / 2;  // = 136
 // 单调性按"牌面等级"加权：相邻两格等级差越大、且方向与单调方向相反，罚得越重。
 // 让大数字的不单调被重罚，是强启发式的关键细节 ——
 // 小数字乱一点无所谓，大数字错位往往是致命的。
-[[nodiscard]] float RowMonotonicity(PackedRow row) {
+//
+// ⚠️ **空位必须跳过，不能当等级 0 参与比较。** 这是 2026-09-13 修掉的缺陷：
+// 原先直接比较相邻两格（空格 = 0），于是行 `[16,8,_,2]`（指数 4,3,0,1）被算成
+//   - 递增方向：4>3 罚 1、3>0 罚 3
+//   - 递减方向：0<1 罚 1
+// 两个方向**都被罚**，而玩家看到的其实是 `16,8,2` —— 完全单调递减。
+// 中局到处是空洞，这等于让"保持单调"这个最强信号被系统性污染。
+// 标准实现（nneonneo / macroxue）都是只看**相邻的非空牌**。
+[[nodiscard]] float RowMonotonicity(PackedRow row, bool skip_empty) {
   std::array<int, kBoardSize> v{};
+  int count = 0;
   for (int i = 0; i < kBoardSize; ++i) {
-    v[static_cast<std::size_t>(i)] = static_cast<int>((row >> (kBitsPerCell * i)) & 0xFu);
+    const int e = static_cast<int>((row >> (kBitsPerCell * i)) & 0xFu);
+    if (skip_empty && e == 0) continue;  // 跳过空位
+    v[static_cast<std::size_t>(count++)] = e;
   }
 
   float increasing_penalty = 0.0F;  // 期望非递减时的反向落差
   float decreasing_penalty = 0.0F;  // 期望非递增时的反向落差
-  for (int i = 0; i + 1 < kBoardSize; ++i) {
+  for (int i = 0; i + 1 < count; ++i) {
     const int left = v[static_cast<std::size_t>(i)];
     const int right = v[static_cast<std::size_t>(i + 1)];
     if (left > right) {
@@ -221,11 +232,11 @@ struct PerRowTables {
 };
 
 [[nodiscard]] const PerRowTables& Tables() {
-  static const PerRowTables tables = [] {
+  static PerRowTables tables = [] {
     PerRowTables t;
     for (std::uint32_t state = 0; state < kRowStates; ++state) {
       const auto row = static_cast<PackedRow>(state);
-      t.monotonicity[state] = RowMonotonicity(row);
+      t.monotonicity[state] = RowMonotonicity(row, true);
       t.smoothness[state] = RowSmoothness(row);
       t.merge[state] = RowMergePotential(row);
       t.merge_value[state] = RowMergeValue(row);
@@ -514,6 +525,15 @@ struct RawTerms {
 }  // namespace
 
 int CountMobility(std::uint64_t board) noexcept { return CountMobilityImpl(board); }
+
+void SetMonotonicitySkipsEmptyForTesting(bool skip_empty) {
+  // 行查表是 static 的（只建一次），这里显式重写单调性那一列。
+  // 只被标定工具调用，生产路径不会碰它。
+  PerRowTables& t = const_cast<PerRowTables&>(Tables());
+  for (std::uint32_t state = 0; state < kRowStates; ++state) {
+    t.monotonicity[state] = RowMonotonicity(static_cast<PackedRow>(state), skip_empty);
+  }
+}
 
 /**
  * 原始项 + 两个**按权重门控**的补充项。
