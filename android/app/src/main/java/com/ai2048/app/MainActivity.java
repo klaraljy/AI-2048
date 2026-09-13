@@ -29,9 +29,10 @@ import androidx.webkit.WebViewAssetLoader;
  *
  * <h2>离线可玩</h2>
  *
- * 引擎（走子 AI）没有编进 APK —— 见 android/README.md 的说明。
- * 前端在连不上引擎时会自己降级到内置的本地 AI，并显示提示条，
- * 所以这个 APK 是**完全离线可玩**的，只是 AI 弱一档。
+ * C++ 引擎（走子 AI）现在**已经编进 APK**：见 {@link NativeEngine} 与
+ * {@code src/main/cpp/jni_bridge.cpp}。做法是把它编成 .so 并注入
+ * {@code window.AI2048Native}，前端探测到它就走 JNI，否则降级到内置的 JS AI。
+ * 所以即使 .so 因为某个 ABI 缺失而没装上，页面仍然可用。
  */
 public class MainActivity extends ComponentActivity {
 
@@ -50,6 +51,12 @@ public class MainActivity extends ComponentActivity {
 
         webView = new WebView(this);
         setContentView(webView);
+
+        // 把 C++ 引擎注入成 window.AI2048Native。
+        // 名字里的 NativeEngine 只是调试用的标签，页面不读它。
+        // 库加载失败时 addJavascriptInterface 照常执行，但对象里的方法全部返回
+        // null —— 页面据此降级到内置 JS AI（见 transport.js）。
+        webView.addJavascriptInterface(new NativeEngine.Bridge(), "AI2048Native");
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -82,6 +89,13 @@ public class MainActivity extends ComponentActivity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         webView.saveState(outState);
+    }
+
+    @Override
+    protected void onDestroy() {
+        // 释放原生会话（置换表等）。不释放会随每次重建 Activity 泄漏一份。
+        NativeEngine.dispose();
+        super.onDestroy();
     }
 
     /**

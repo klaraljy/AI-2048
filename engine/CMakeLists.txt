@@ -22,6 +22,14 @@ endif()
 option(AI2048_BUILD_TESTS "Build unit tests (requires network for GoogleTest)" OFF)
 option(AI2048_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
+# 桌面消费者（CLI 与 WebSocket 服务）默认构建。
+#
+# Android 上必须关掉（`-DAI2048_DESKTOP_CONSUMERS=OFF`）：那两个是**进程**，
+# 依赖 socket、线程与命令行，在 Android 的 JNI 库里既编不过也没意义 ——
+# 手机端要的是静态库 + JNI 薄封装。
+# 引擎核心 ai2048_core 不受这个开关影响，三个消费者共用它。
+option(AI2048_DESKTOP_CONSUMERS "Build desktop-only consumers (CLI, WebSocket server)" ON)
+
 function(ai2048_apply_project_flags target)
   if(MSVC)
     target_compile_options(${target} PRIVATE /W4 /permissive-)
@@ -117,7 +125,11 @@ ai2048_apply_project_flags(ai2048_train)
 #
 # 链接 ai2048_train 是**刻意的**：训练子命令需要线程，跑批/自检不需要。
 # ai2048_train 已经把 ai2048_core 传递过来（PUBLIC），所以不用重复链接。
+#
+# 与下面那个 WebSocket 服务同属**桌面消费者**，Android 下整段跳过
+# （见文件开头 AI2048_DESKTOP_CONSUMERS 的说明）。
 # ---------------------------------------------------------------------------
+if(AI2048_DESKTOP_CONSUMERS)
 add_executable(ai2048-cli src/cli/main.cpp)
 target_link_libraries(ai2048-cli PRIVATE ai2048_train)
 ai2048_apply_project_flags(ai2048-cli)
@@ -150,6 +162,7 @@ if(MSVC)
 endif()
 
 ai2048_apply_project_flags(ai2048-server)
+endif()  # AI2048_DESKTOP_CONSUMERS
 
 # ---------------------------------------------------------------------------
 # 测试

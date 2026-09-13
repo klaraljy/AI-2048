@@ -1427,6 +1427,36 @@ int RunJsonCheck() {
   return 0;
 }
 
+int RunSelfTest(const Options& options) {
+  // 与 jni_bridge.cpp 的 kBoards 完全相同（指数：0 空格、1=2、2=4、3=8、4=16、5=32、6=64）
+  const int boards[3][ai2048::kCellCount] = {
+      {5, 4, 3, 2, 4, 3, 2, 1, 3, 2, 1, 0, 2, 1, 0, 0},
+      {4, 4, 3, 2, 3, 2, 2, 1, 2, 1, 1, 0, 1, 0, 0, 0},
+      {6, 5, 4, 3, 5, 4, 3, 2, 4, 3, 2, 1, 3, 2, 1, 0},
+  };
+
+  ai2048::SearchConfig config;
+  config.base_depth = options.depth;
+  config.time_budget_ms = 0;  // 不限时：否则结果依赖机器速度，两边没法比
+  config.difficulty = options.difficulty;
+
+  std::string out;
+  for (const auto& cells : boards) {
+    std::array<int, ai2048::kCellCount> exponents{};
+    for (int i = 0; i < ai2048::kCellCount; ++i) exponents[i] = cells[i];
+
+    ai2048::TranspositionTable table;  // 每次全新：局面之间不许互相影响
+    const ai2048::SearchResult result =
+        ai2048::SearchBestMove(ai2048::EncodeBoard(exponents), config, &table, std::nullopt);
+
+    if (!out.empty()) out += ",";
+    out += result.move.has_value() ? ai2048::DirectionName(*result.move) : "none";
+  }
+
+  std::cout << out << "\n";
+  return 0;
+}
+
 void PrintUsage() {
   std::cout
       << "ai2048-cli " << ai2048::VersionString() << " (ruleset " << ai2048::RulesetVersion()
@@ -1448,6 +1478,7 @@ void PrintUsage() {
       << "  move      --stdin                            批量模式，每行 \"<16 个指数> <方向>\"\n"
       << "  trace     --seeds <文件> [--limit N]          每局输出一行状态，供前端规则对拍\n"
       << "  selfcheck --seeds <文件>                      同种子重跑两次，校验逐字节一致\n"
+      << "  selftest  [--depth N] [--difficulty D]        打印固定局面的决策，供 Android JNI 比对\n"
       << "  bench     --seeds <文件> [--limit N] [--threads N] [--tag T]\n"
       << "  compare   --seeds <文件> [--limit N] [--weights-b S] [--depth-b N] [--time-b N]\n"
       << "            配对对拍：A/B 跑同一批种子，输出逐局差值的均值与标准误。\n"
@@ -1493,6 +1524,7 @@ int main(int argc, char** argv) {
   if (command == "trace") return RunTrace(options);
   if (command == "json") return RunJsonCheck();
   if (command == "selfcheck") return RunSelfCheck(options);
+  if (command == "selftest") return RunSelfTest(options);
   if (command == "bench") return RunBench(options);
   if (command == "compare") return RunCompare(options);
   if (command == "train") return RunTrain(options);

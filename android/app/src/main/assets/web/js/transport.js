@@ -272,29 +272,127 @@ export class WebSocketTransport {
 }
 
 /**
+ * Android APK 里的原生引擎（C++ 经 JNI 暴露成 window.AI2048Native）。
+ *
+ * ## 为什么需要它
+ *
+ * 手机上没有本地服务器可连，页面会降级到 LocalTransport（1 层贪心的 JS AI）——
+ * 规则一致，但**棋力与桌面差一大截**。APK 里所以把 C++ 引擎编成 .so 并注入这个
+ * 对象，让手机上跑**同一份引擎**（同一批源码、同一套权重）。
+ *
+ * ## 接口约定（与 NativeEngine.Bridge 一一对应）
+ *
+ *   configure(json) -> boolean
+ *   bestMove(boardJson, lastMove) -> json 字符串 | null
+ *   newGame() -> void
+ *   engineInfo() -> json 字符串 | null
+ *
+ * 任何一步返回 null / 抛异常都当作"原生不可用"，由调用方降级 ——
+ * **绝不把 JNI 的问题抛给页面**：那层出问题时游戏必须还能玩。
+ */
+class NativeTransport {
+  constructor(bridge) {
+    this.bridge = bridge;
+    this._lastMove = null;
+    this._info = null;
+  }
+
+  /** 探测原生引擎是否**真的**可用（方法存在 ≠ 库加载成功）。 */
+  static detect() {
+    if (typeof window === 'undefined') return null;
+    const bridge = window.AI2048Native;
+    if (!bridge || typeof bridge.bestMove !== 'function' || typeof bridge.configure !== 'function') {
+      return null;
+    }
+    // engineInfo 会真的调一次 native；库没装上时它返回 null
+    try {
+      if (typeof bridge.engineInfo === 'function' && bridge.engineInfo() === null) return null;
+    } catch {
+      return null;
+    }
+    return bridge;
+  }
+
+  async configure(config) {
+    this._lastMove = null;
+    try {
+      return this.bridge.configure(JSON.stringify(config)) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async bestMove(board) {
+    let raw = null;
+    try {
+      raw = this.bridge.bestMove(JSON.stringify(board), this._lastMove);
+    } catch {
+      raw = null;
+    }
+    if (!raw) return { move: null, debugInfo: null };
+
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.move === 'string') this._lastMove = parsed.move;
+    this._info = parsed;
+    return { move: parsed.move ?? null, debugInfo: parsed };
+  }
+
+  /** 新开一局：清引擎的置换表。 */
+  newGame() {
+    try {
+      if (typeof this.bridge.newGame === 'function') this.bridge.newGame();
+    } catch {
+      // 清理失败不该打断"新开一局"
+    }
+    this._lastMove = null;
+  }
+
+  destroy() {
+    // 原生会话由 Activity 的 onDestroy 释放，页面侧不用管
+  }
+
+  /** 最近一次决策附带的信息（引擎版本、规则集）。 */
+  info() {
+    return this._info;
+  }
+}
+
+/**
  * 建一个可用的传输后端。
  *
- * 优先连引擎；连不上就降级到本地 AI，并**如实报告降级事实** ——
+ * 优先级：**原生引擎（APK）> WebSocket 引擎（桌面）> 本地 JS 降级 AI**。
+ * 原生排在最前：APK 里即使配了 engineUrl 也连不上（手机上起不了本地服务），
+ * 而原生就是同一份 C++ 引擎，没有理由绕道网络。
+ *
+ * 连不上任何引擎时降级到本地 AI，并**如实报告降级事实** ——
  * 调用方要把这件事显示给用户，不能让用户以为降级 AI 就是引擎的水平。
  *
  * @param {object} [options]
  * @param {string|null} [options.engineUrl] 引擎地址；null 表示不用引擎
  * @param {number} [options.requestTimeoutMs] 等引擎回包的超时（随 AI 强度变化）
- * @returns {Promise<{transport: object, degraded: boolean, reason: string|null}>}
+ * @returns {Promise<{transport: object, degraded: boolean, reason: string|null, source: string}>}
  */
 export async function createTransport({ engineUrl = null, requestTimeoutMs } = {}) {
+  // 1) 原生引擎（Android APK）
+  const bridge = NativeTransport.detect();
+  if (bridge) {
+    return { transport: new NativeTransport(bridge), degraded: false, reason: null, source: 'native' };
+  }
+
+  // 2) WebSocket 引擎（桌面）
   if (!engineUrl) {
     return {
       transport: new LocalTransport(),
       degraded: true,
       reason: '未配置引擎地址，使用本地降级 AI',
+      source: 'local',
     };
   }
 
   const remote = new WebSocketTransport(engineUrl, 1500, requestTimeoutMs);
   try {
     await remote.connect();
-    return { transport: remote, degraded: false, reason: null };
+    return { transport: remote, degraded: false, reason: null, source: 'websocket' };
   } catch (error) {
     remote.destroy();
     const reason = error && error.message ? error.message : String(error);
@@ -302,8 +400,9 @@ export async function createTransport({ engineUrl = null, requestTimeoutMs } = {
       transport: new LocalTransport(),
       degraded: true,
       reason: `连不上引擎（${reason}），已降级为本地 AI`,
+      source: 'local',
     };
   }
 }
 
-export { DIRECTIONS, hasLegalMove };
+export { DIRECTIONS, hasLegalMove, NativeTransport };

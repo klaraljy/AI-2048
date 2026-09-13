@@ -78,6 +78,9 @@ android/app/build/outputs/apk/*
 !android/app/build/outputs/apk/debug/
 android/.idea/
 android/captures/
+# NDK/CMake 的中间产物（配置缓存、目标文件）。体积大且可重建，
+# 与 android/app/build/ 同理 —— 只放行最终的 debug APK。
+android/app/.cxx/
 # ⚠️ **debug APK 要提交，不许再写 `*.apk` 这一条**（用户 2026-09-13 明确要求）。
 # 理由：APK 是这个项目**可直接使用的交付物** —— 提交进仓库，clone 下来就能装，
 # 不需要先装 Android SDK / Gradle / JDK 再自己构建。

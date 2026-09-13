@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#cf8571" />
     <title>AI-2048</title>
+    <!--
+      安卓壳标记：APK 里 MainActivity 用 WebViewAssetLoader 把资源挂在
+      https://appassets.androidplatform.net/ 这个源上（原因见 MainActivity 的注释），
+      浏览器打开时源不是它。给 <html> 挂一个类，CSS 就能按平台分支。
+
+      ⚠️ 这段必须放在样式表**之前**：否则安卓下会先按浏览器样式渲染一帧
+      再切成安卓样式，也就是开屏闪一下。
+    -->
+    <script>
+      if (location.host === 'appassets.androidplatform.net') {
+        document.documentElement.classList.add('is-android');
+      }
+    </script>
     <link rel="stylesheet" href="./css/style.css" />
   </head>
   <body>

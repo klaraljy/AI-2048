@@ -6,12 +6,56 @@ android {
     namespace 'com.ai2048.app'
     compileSdk 35
 
+    // ⚠️ **必须钉住 NDK 版本**（本机已装 29.0.14206865，见 D:\Codex Tools\Android\ndk）。
+    // 不写这一行时 AGP 会用它自己的默认版本（27.0.12077973），发现 SDK 里没有
+    // 就去"安装"——实测会触发一次约 1GB 的下载，而本机其实已经有 NDK 了。
+    ndkVersion '29.0.14206865'
+
     defaultConfig {
         applicationId "com.ai2048.app"
         minSdk 24
         targetSdk 35
         versionCode 1
         versionName "0.1.0"
+
+        // ------------------------------------------------------------------
+        // 把 C++ 引擎编进 APK（JNI）
+        //
+        // 为什么要做：手机上没有本地服务器可连，前端会降级到内置的 JS 贪心 AI ——
+        // 规则一致但棋力差一大截。用户要的是"AI 同步"，也就是手机上跑**同一份**
+        // C++ 引擎。架构约束见 AGENTS.md「移动端」。
+        //
+        // 只编 arm64-v8a 与 armeabi-v7a：覆盖 2015 年之后的手机。
+        // 加 x86/x86_64 会让 APK 里的 .so 数量翻倍，而真机几乎用不到
+        //（模拟器用得上，需要时再单独编）。
+        // ------------------------------------------------------------------
+        externalNativeBuild {
+            cmake {
+                // AI2048_ENGINE_DIR 指向**同一份** engine 源码，不复制副本。
+                //
+                // ⚠️ 用 rootProject 推导，**不要手数 ../ 的层数**。
+                // 我数错过两次：写 ../../../engine 得到 E:\DeepSeekProjects\engine、
+                // 写 ../../../../engine 得到 E:\engine，两次都不存在 ——
+                // CMake 报的 "add_subdirectory given source ... which is not an
+                // existing directory" 只说明目录不存在，并不会告诉你差了几层。
+                // rootProject.projectDir 是 Gradle 明确给的绝对路径（android/），
+                // 往上一层就是项目根，再进 engine —— 不会数错。
+                arguments "-DAI2048_ENGINE_DIR=" +
+                        file("${rootProject.projectDir}/../engine").canonicalPath
+                cppFlags '-std=c++20'
+            }
+        }
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            // 不指定 version：让 AGP 用 SDK 里已有的那个（`cmake` 目录目前是空的，
+            // 写死版本会触发一次 SDK 侧下载）。真需要固定时再写。
+        }
     }
 
     buildTypes {

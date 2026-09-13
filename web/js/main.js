@@ -578,6 +578,13 @@ function newGame() {
   lastMove = null;
   maxCelebrated = 0;
   celebrated2048 = false;
+
+  // 通知 AI 后端"新的一局开始了"。
+  // WebSocket 引擎无所谓，但 **Android 的原生引擎要清置换表** ——
+  // 表是按"一局之内"设计的（见 engine/src/ai/search.h），跨局复用会把上一局的
+  // 搜索结果带进来，既不干净也没必要。
+  if (transport && typeof transport.newGame === 'function') transport.newGame();
+
   renderer.reset(game.board, { score: game.score, best });
   refreshBestHighlight();
   refreshControls();

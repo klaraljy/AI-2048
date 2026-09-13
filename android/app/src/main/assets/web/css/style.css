@@ -95,8 +95,17 @@ body {
 
 .title {
   margin: 0;
-  /* 用户指定 64px（见 :root 的 --title-font-size） */
-  font-size: var(--title-font-size);
+  /* 标题字号：上限 64px（用户指定），但**必须随屏宽收缩** ——
+     窄屏上 64px 的"2048"约 214px 宽，加上两个分数框（各 108 + 间距）
+     一共 452px，而 360px 手机只有 328px 可用，分数框会被挤出屏幕
+     （用户 2026-09-13 报的"两个分数框有点长，都超出屏幕"）。
+
+     系数怎么来的（别凭感觉写，我第一次就写错成 0.62，结果任何屏宽都顶到 64）：
+       360px 屏 → 想要约 41px      560px 屏 → 64px
+       解直线：(64-41)/(560-360) = 0.115，截距 41 - 0.115*360 = -0.4
+       即 min(64px, max(30px, 0.115 * 100vw - 0.4px))
+     实测：360 → 41px（标题约 140px），560 → 64px。 */
+  font-size: min(var(--title-font-size), max(30px, calc(0.115 * 100vw - 0.4px)));
   font-weight: 800;
   letter-spacing: -1px;
   line-height: 1;
@@ -963,6 +972,19 @@ button.active svg {
   margin-top: 14px;
 }
 
+/* ---------------------------------------------------------------------------
+   安卓壳（APK）里不显示快捷键提示
+   ---------------------------------------------------------------------------
+   用户 2026-09-13 要求。理由很直接：**手机上根本没有物理键盘**，
+   提示方向键 / WASD / R / U / M / 空格全是废话，白占一屏底部空间。
+
+   `.is-android` 由 index.html 顶部那段内联脚本挂上：APK 的 MainActivity 用
+   WebViewAssetLoader 把资源挂在 appassets.androidplatform.net 这个源下，
+   浏览器打开时源不是它。所以这一条**不影响网页版**。 */
+.is-android .hint {
+  display: none;
+}
+
 /* 快捷键提示。⚠️ 这不是"控件备注"—— 用户要求删的是下拉选项里的备注，
    操作提示要留着（我先前误删过一次，已恢复）。
    宽度与控件行、棋盘一致（--board-size），并且**文字居中排**（用户指定的 A 方案：
@@ -975,6 +997,26 @@ button.active svg {
   font-size: 12px;
   line-height: 1.7;
   color: rgba(255, 255, 255, 0.84);
+}
+
+/* 窄屏：让两个分数框能收缩，不再把屏幕顶出去。
+   用户报"两个分数框有点长，都超出屏幕了" —— 根因在 .topbar 那一行：
+   标题（64px 时约 214px）+ 两个分数框（各 min-width 108）+ 间距，
+   360px 屏上要 452px，而可用只有 328px。
+   标题已改成随屏宽收缩（见 .title 的 clamp）；这里再让分数框允许被压缩。 */
+@media (max-width: 560px), (pointer: coarse) {
+  .scores {
+    /* ⚠️ flex 子项默认 min-width:auto，会拒绝收缩到内容宽度以下，必须显式清零 */
+    min-width: 0;
+  }
+
+  .score-box {
+    min-width: 0;
+    /* flex-basis 用 0 而不是 auto：两个框**等宽**，
+       否则"所有时间"因为有皇冠和更长的字会比"当前的"宽一截（实测 51.6 vs 76.4）。 */
+    flex: 1 1 0;
+    padding: 4px 8px;
+  }
 }
 
 kbd {
