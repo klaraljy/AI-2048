@@ -95,70 +95,137 @@ inline constexpr std::array<std::array<int, 2>, 4> kNeighbourOffsets = {
 }
 
 /**
+ * 某一行 / 某一列有几个空格。
+ *
+ * 困难档"填满行/列"的判据要用它 —— 与格子数值无关，只看满不满。
+ */
+[[nodiscard]] int RowEmptyCount(std::uint64_t board, int row) noexcept {
+  int n = 0;
+  for (int c = 0; c < kBoardSize; ++c) {
+    if (GetExponent(board, row * kBoardSize + c) == 0) ++n;
+  }
+  return n;
+}
+
+[[nodiscard]] int ColEmptyCount(std::uint64_t board, int col) noexcept {
+  int n = 0;
+  for (int r = 0; r < kBoardSize; ++r) {
+    if (GetExponent(board, r * kBoardSize + col) == 0) ++n;
+  }
+  return n;
+}
+
+/**
  * 困难档：这个空位对玩家有多**不利**。
  *
- * 关键的一条是**减去立即合并的机会**。旧实现只找"最拥挤的位置"，
- * 而最拥挤处常常紧挨同值块 —— 新块落下去白送一次合并，等于在帮玩家。
- * 文档明确指出这一点，这里按「拥挤 + 断裂 + 贴大块 − 可合并 − 角/边」
- * 一起算。
+ * ⚠️ **主导项是「封最大块的路」，其它项只是微调。** 这是 2026-09-13 的第二次
+ * 修订，起因是用户实测反馈："生成在空白位置的概率还是比较高，我想要的是
+ * 大概率生成在有空闲位置的最大方块旁边 —— 比如一行里面有三个，你就要大概率
+ * 生成在第四个把这一行封死。"
+ *
+ * 上一版的问题（实测，2 万次采样/盘面）：
+ *   - 判据是「贴着**任意** 32+ 的块」（+80/+140/+200），不是「贴着最大的块」；
+ *   - 于是"拥挤度 +120 × 多个邻居"和"断裂点 +150"都能盖过它；
+ *   - 结果**最大块所在的行/列完全没有被优待**：盘面实测占 42.8%，
+ *     而均匀基期是 42.9% —— 等于没有偏置。
+ *
+ * 现在改成两层结构：先看"是否与最大块同行/同列"（决定性），
+ * 再在层内用拥挤度、断裂点、可合并惩罚微调。这样"封路位置"必然排在前面。
  */
 [[nodiscard]] int HostileScore(std::uint64_t board, int index) noexcept {
   const int row = index / kBoardSize;
   const int col = index % kBoardSize;
   int score = 0;
 
+  // ---------------------------------------------------------------------------
+  // 主导项：**把行/列填满**（用户的明确要求）
+  // ---------------------------------------------------------------------------
+  // 用户原话（2026-09-13 第三次修订）：
+  //
+  //   「假如，空、32、8、4，你就高概率生成在空位，然后导致封路。
+  //     封路和方块大小数字不同没有关系，就是要使这一行填满，
+  //     应该主要是填满而不是封路。」
+  //
+  // 所以判据是「这一行/列**已经有几块**」，**与格子的数值完全无关**，
+  // 也不是我先前理解的"两侧数字不同"。机理：
+  //
+  //   一行只要还有空位，它就能被继续滑动、也能与相邻行交换牌；
+  //   填满之后这一行就**刚性**了 —— 玩家只能靠移动整盘来重新腾挪。
+  //   填得越满的一行，再填一格的边际伤害越大。
+  //
+  // 之前几版都在看"数值"（贴大块、异值接缝），方向偏了：
+  // 实测用户给的形态 `空,32,8,4` 拿不到高概率。
+  const int row_tiles = kBoardSize - RowEmptyCount(board, row);
+  const int col_tiles = kBoardSize - ColEmptyCount(board, col);
+  const int line_tiles = row_tiles > col_tiles ? row_tiles : col_tiles;
+
+  // 3 块的行/列填第 4 格 → 1400；完全空的行列 → 只有 60。
+  static_assert(kBoardSize == 4, "下面的分档按 4x4 硬编码，改尺寸要同步改");
+  static constexpr int kFillBonus[kBoardSize + 1] = {0, 60, 900, 1200, 1400};
+  score += kFillBonus[line_tiles];
+
+  // 这个空格两侧都有块（填上就连成一条）→ 略微再加，表示"补的是缺口"
+  // 而不是行尾的延伸。数值仍不参与。
+  if (row_tiles >= 2 && col > 0 && col + 1 < kBoardSize &&
+      GetExponent(board, row * kBoardSize + col - 1) != 0 &&
+      GetExponent(board, row * kBoardSize + col + 1) != 0) {
+    score += 120;
+  }
+  if (col_tiles >= 2 && row > 0 && row + 1 < kBoardSize &&
+      GetExponent(board, (row - 1) * kBoardSize + col) != 0 &&
+      GetExponent(board, (row + 1) * kBoardSize + col) != 0) {
+    score += 120;
+  }
+
+  // 贴最大块 / 在最大块的行列上：次要加分（第二策略）。
+  int max_exponent = 0;
+  int max_index = -1;
+  for (int i = 0; i < kCellCount; ++i) {
+    const int e = GetExponent(board, i);
+    if (e > max_exponent) {
+      max_exponent = e;
+      max_index = i;
+    }
+  }
+  if (max_index >= 0) {
+    const int mr = max_index / kBoardSize;
+    const int mc = max_index % kBoardSize;
+    const int dr = row > mr ? row - mr : mr - row;
+    const int dc = col > mc ? col - mc : mc - col;
+    if (dr + dc == 1)
+      score += 300;  // 正贴着最大块
+    else if (dr == 0 || dc == 0)
+      score += 120;  // 在最大块的行/列上
+  }
+
+  // ---------------------------------------------------------------------------
+  // 微调：拥挤度与「可立即合并」
+  // ---------------------------------------------------------------------------
   for (const auto& offset : kNeighbourOffsets) {
     const int r = row + offset[0];
     const int c = col + offset[1];
     if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) continue;
     const int exponent = GetExponent(board, r * kBoardSize + c);
-    if (exponent == 0) continue;          // 空邻居不加分：拥挤度由非空邻居那边算
-    score += 120;                         // 拥挤度
-    score += HighValuePenalty(exponent);  // 贴高价值块
-    if (exponent == 1) score -= 96;       // 80% × 1.2：能立刻合并 → 对玩家有利
-    if (exponent == 2) score -= 24;       // 20% × 1.2
+    if (exponent == 0) continue;
+    score += 60;                      // 拥挤度
+    if (exponent == 1) score -= 120;  // 邻格是 2：落子白送一次合并 → 对玩家有利
+    if (exponent == 2) score -= 40;   // 邻格是 4
   }
 
-  // ⚠️ 这里**曾经**还有一项 `score += (4 - empty_neighbours) * 50;`，
-  // 是我自己加的，文档的评分表里没有它。它是个真 bug，测试抓住了：
-  //
-  // 「空邻居少」与「occupied 多」是同一件事的两种说法（四邻非空即满），
-  // 所以那一项等于把"拥挤度"**加倍计权**，而且加到 +150 之后完全盖过了
-  // −192 的合并惩罚 —— 结果一个"贴着 8、落下去就能合并"的格子
-  // （对玩家明显有利）拿到了全场最高分，与设计意图正好相反。
-  //
-  // 与本项目其它几次教训一致：缺失的从来不是"再加一项"，
-  // 而是删掉信息重叠的那一项。四个评分项各自已经表达了意图。
-
-  // 断裂点：空位夹在两个**不同**数字之间，落子会打断排列。
-  // 横竖两对，各自判断"两侧都有块且数值不同"。
-  for (int axis = 0; axis < 2; ++axis) {
-    const int dr = axis == 0 ? 1 : 0;
-    const int dc = axis == 0 ? 0 : 1;
-    const int r1 = row - dr;
-    const int c1 = col - dc;
-    const int r2 = row + dr;
-    const int c2 = col + dc;
-    if (r1 < 0 || r1 >= kBoardSize || c1 < 0 || c1 >= kBoardSize) continue;
-    if (r2 < 0 || r2 >= kBoardSize || c2 < 0 || c2 >= kBoardSize) continue;
-    const int a = GetExponent(board, r1 * kBoardSize + c1);
-    const int b = GetExponent(board, r2 * kBoardSize + c2);
-    if (a != 0 && b != 0 && a != b) score += 150;
-    if (a != 0 && b != 0) {
-      const int hi = a > b ? a : b;
-      const int lo = a > b ? b : a;
-      if (hi >= lo + 2) score += 150;  // 差距 ≥ 4 倍（指数差 2）
-    }
-  }
+  // ⚠️ 这里**曾经**有一个「断裂点」循环（两侧都有块且数值不同 → +100/+100）。
+  // 它与"填满行/列"的意图**信息重叠**：一行的空位被填满时，两侧自然就是块，
+  // 留着等于对同一件事加倍计权，而且只给 +100、与主导项（+900~1400）量级不搭。
+  // 前端已经删掉，C++ 这里漏删了 —— 结果两边分数差 200/400，
+  // 前端与引擎的生成分布静默分叉。信息重叠的项要删掉，不是叠加
+  // （这条教训本项目已经踩过四次，这是第四次）。
 
   // 困难档刻意**不**偏向角落：角落对玩家有利，一直往角上放会让
   // "角落策略"继续过强。
   //
   // ⚠️ 这两条惩罚以前**完全无效** —— 函数末尾有一句 `score < 0 ? 0 : score`，
-  // 而一个空角落格通常没有任何断裂点/贴大块的加分，本身就得 0 分，
-  // 减去 80 之后又被夹回 0。于是"不往角落放"这条设计意图从未生效：
-  // 实测角落格与平庸 0 分格的落点份额完全一样。
-  // 现在允许负分，负分对应的权重趋近 0（见 kScoreFloor）。
+  // 而一个空角落格通常没有任何加分、本身就得 0 分，减去 80 之后又被夹回 0。
+  // 于是"不往角落放"这条设计意图从未生效：实测角落格与平庸 0 分格的落点
+  // 份额完全一样。现在允许负分（见 kScoreFloor）。
   if (IsCornerCell(row, col)) score -= 80;
   if (IsEdgeCell(row, col)) score -= 30;
 
@@ -182,6 +249,18 @@ inline constexpr std::array<std::array<int, 2>, 4> kNeighbourOffsets = {
 // ---------------------------------------------------------------------------
 inline constexpr int kWeightTableLimit = kScoreSaturation;
 
+// 运行期可覆盖的 strength / 加权占比。
+//
+// **仅用于标定工具**（`tools/` 下的分析器与探针）：偏置强度这类参数只有把
+// "不同取值下的实际分布"并排打出来才能选，而每试一个值都重编译一次太慢。
+//
+// ⚠️ 默认值就是编译期常量，**生产路径不调用 SetWeightParamsForTesting**，
+// 所以确定性不受影响（同种子逐字节一致的承诺只依赖默认路径）。
+int g_hard_weight_strength = kHardWeightStrength;
+int g_easy_weight_strength = kEasyWeightStrength;
+std::uint64_t g_easy_weighted_share = kEasyWeightedShare;
+std::uint64_t g_hard_weighted_share = kHardWeightedShare;
+
 [[nodiscard]] const std::vector<std::int64_t>& WeightTable(bool hard) noexcept {
   const auto build = [](std::int32_t strength) {
     std::vector<std::int64_t> table(static_cast<std::size_t>(kWeightTableLimit - kScoreFloor + 1));
@@ -193,9 +272,28 @@ inline constexpr int kWeightTableLimit = kScoreSaturation;
     }
     return table;
   };
+  // 表按 strength 缓存：标定工具会换 strength，缓存键必须跟着变。
   static const std::vector<std::int64_t> easy_table = build(kEasyWeightStrength);
   static const std::vector<std::int64_t> hard_table = build(kHardWeightStrength);
-  return hard ? hard_table : easy_table;
+  static std::vector<std::int64_t> easy_override;
+  static std::vector<std::int64_t> hard_override;
+  static int easy_override_strength = kEasyWeightStrength;
+  static int hard_override_strength = kHardWeightStrength;
+
+  if (hard) {
+    if (g_hard_weight_strength != hard_override_strength) {
+      hard_override = build(g_hard_weight_strength);
+      hard_override_strength = g_hard_weight_strength;
+    }
+    if (!hard_override.empty()) return hard_override;
+    return hard_table;
+  }
+  if (g_easy_weight_strength != easy_override_strength) {
+    easy_override = build(g_easy_weight_strength);
+    easy_override_strength = g_easy_weight_strength;
+  }
+  if (!easy_override.empty()) return easy_override;
+  return easy_table;
 }
 
 /**
@@ -224,10 +322,24 @@ int HostileSpawnScore(std::uint64_t board, int index) noexcept {
 }
 
 int ExportScoreFloor() noexcept { return kScoreFloor; }
-
 int ExportScoreSaturation() noexcept { return kScoreSaturation; }
 
 std::vector<std::int64_t> ExportWeightTableForTesting(bool hard) { return WeightTable(hard); }
+
+void SetWeightParamsForTesting(int strength, int weighted_share) noexcept {
+  if (strength > 0) {
+    g_hard_weight_strength = strength;
+    g_easy_weight_strength = strength;
+  }
+  if (weighted_share >= 0 && weighted_share <= 1000) {
+    g_hard_weighted_share = static_cast<std::uint64_t>(weighted_share);
+    g_easy_weighted_share = static_cast<std::uint64_t>(weighted_share);
+  }
+}
+
+int EffectiveHardWeightStrength() noexcept { return g_hard_weight_strength; }
+
+int EffectiveHardWeightedShare() noexcept { return static_cast<int>(g_hard_weighted_share); }
 
 std::array<double, kCellCount> SpawnCellWeights(std::uint64_t board,
                                                 Difficulty difficulty) noexcept {
@@ -242,9 +354,9 @@ std::array<double, kCellCount> SpawnCellWeights(std::uint64_t board,
 
   std::uint64_t weighted_share = 0;
   if (difficulty == Difficulty::kEasy) {
-    weighted_share = kEasyWeightedShare;
+    weighted_share = g_easy_weighted_share;
   } else if (difficulty == Difficulty::kHard) {
-    weighted_share = kHardWeightedShare;
+    weighted_share = g_hard_weighted_share;
   }
 
   // 先算每个空格的原始权重，并求出总和 —— 纯随机分支的"每格份额"
@@ -331,9 +443,9 @@ SpawnRecord Game::SpawnRandomTile() noexcept {
 
   std::uint64_t weighted_share = 0;
   if (difficulty_ == Difficulty::kEasy) {
-    weighted_share = kEasyWeightedShare;
+    weighted_share = g_easy_weighted_share;
   } else if (difficulty_ == Difficulty::kHard) {
-    weighted_share = kHardWeightedShare;
+    weighted_share = g_hard_weighted_share;
   }
 
   if (weighted_share > 0 && roll_branch < weighted_share) {

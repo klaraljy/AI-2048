@@ -58,14 +58,17 @@ $(Format-Table $tables['HARD'])
 ];
 "@
 
-# 3) Locate and replace: from `const WEIGHT_TABLE = [` to the first `];`.
+# 3) Locate and replace each table: from `const <K>_WEIGHT_TABLE = [` to the first `\n];`.
 $text = [System.IO.File]::ReadAllText($GameJs, $utf8)
-$pattern = '(?s)const WEIGHT_TABLE = \[.*?\n\];'
-if (-not [regex]::IsMatch($text, $pattern)) { throw 'WEIGHT_TABLE block not found in game.js' }
-$oldLen = [regex]::Match($text, $pattern).Length
-$text = [regex]::Replace($text, $pattern, { param($m) $newTables }, 1)
+foreach ($k in @('EASY', 'HARD')) {
+  $pattern = "(?s)const ${k}_WEIGHT_TABLE = \[.*?\n\];"
+  if (-not [regex]::IsMatch($text, $pattern)) { throw "${k}_WEIGHT_TABLE block not found in game.js" }
+  $oldLen = [regex]::Match($text, $pattern).Length
+  $replacement = "const ${k}_WEIGHT_TABLE = [`n" + (Format-Table $tables[$k]) + "`n];"
+  $text = [regex]::Replace($text, $pattern, { param($m) $replacement }, 1)
+  Write-Host "replaced ${k} (old block was $oldLen chars)"
+}
 [System.IO.File]::WriteAllText($GameJs, $text, $utf8)
-Write-Host "replaced (old block was $oldLen chars)"
 
 # 4) Verify: both tables present, entry counts match the export.
 $check = [System.IO.File]::ReadAllText($GameJs, $utf8)
