@@ -12,15 +12,19 @@
       <header class="topbar">
         <h1 class="title">2048</h1>
         <div class="scores">
+          <!-- 只显示数字：不加"当前的/所有时间"这类文字（用户要求界面无多余文字，
+               说明都在规则弹窗里）。两个框靠位置与配色区分，
+               「所有时间」那个有皇冠图标 + 破纪录时变色。 -->
           <div class="score-box">
-            <span class="score-label">当前的</span>
             <div class="score-roll" id="score-roll">
               <strong class="score-value" id="score">0</strong>
             </div>
           </div>
           <div class="score-box best" id="best-box">
             <span class="score-label" id="best-label">
-              <span class="crown" aria-hidden="true">♛</span>所有时间
+              <svg class="crown" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 17h16l-1.4-8-4.1 3.4L12 6.5 9.5 12.4 5.4 9z" />
+              </svg>
             </span>
             <div class="score-roll" id="best-roll">
               <strong class="score-value" id="best">0</strong>
@@ -44,12 +48,25 @@
       -->
       <div class="controls">
         <label class="ctl">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
           <select id="difficulty" aria-label="难度"></select>
         </label>
         <label class="ctl">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3a6 6 0 0 0-3 11.2V17h6v-2.8A6 6 0 0 0 12 3z" />
+            <path d="M10 20h4" />
+          </svg>
           <select id="strength" aria-label="AI 强度"></select>
         </label>
         <label class="ctl">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="13" r="7" />
+            <path d="M12 13V9" />
+            <path d="M9 2.5h6" />
+          </svg>
           <select id="speed" aria-label="AI 速度"></select>
         </label>
         <button id="rules" type="button" class="ghost icon-btn" title="规则说明">
@@ -162,13 +179,6 @@
       </div>
 
       <div class="notice hidden" id="notice"></div>
-
-      <p class="hint">
-        <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> 或
-        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动，手机上直接滑动。
-        <kbd>R</kbd> 重开，<kbd>U</kbd> 撤销，<kbd>M</kbd> 静音，
-        <kbd>空格</kbd> 让 AI 走一步。
-      </p>
     </div>
 
     <script type="module" src="./js/main.js"></script>

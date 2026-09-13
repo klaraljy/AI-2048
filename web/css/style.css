@@ -98,9 +98,17 @@ body {
 }
 
 /* 皇冠只出现在"所有时间"上 */
+/* 皇冠：现在是**线性 SVG**（原来是一个 ♛ 文字符号，风格与其它图标不一致）。
+   保留金色 —— 它是"历史最高分"的标识，全灰会失去意义。 */
 .crown {
-  color: #f5c451;
-  margin-right: 1px;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: #f5c451;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: -2px;
 }
 
 .score-value {
@@ -155,16 +163,19 @@ body {
 /* ------------------------------------------------------- 控件（两行，用户指定） */
 
 /* 第一行：难度 / AI 强度 / AI 速度 + 规则按钮。
-   ⚠️ **不换行**（用户要求"全部挤在一行"）—— 所以这里没有 flex-wrap，
-   控件用紧凑尺寸；窄屏靠缩放而不是折行来适配。 */
+   ⚠️ **不换行**（用户要求"全部挤在一行"），宽度与棋盘对齐 ——
+   三个下拉框均分空间（flex: 1 1 0），规则按钮固定大小。 */
 .controls {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 10px;
+  /* 与 .board-wrap 同宽，这样控件行与棋盘左右对齐 */
+  width: min(100%, 452px);
 }
 
-/* 第二行：五个带文字的按钮，允许换行（窄屏时挤不下） */
+/* 第二行：五个带文字的按钮。比第一行**窄**（用户要求），
+   所以让它们按内容宽度排列、左对齐，不拉满。 */
 .controls-row2 {
   display: flex;
   align-items: center;
@@ -174,22 +185,37 @@ body {
 }
 
 /* 下拉框容器。
-   ⚠️ 这里踩过一个配色问题：原来是"白色半透明胶囊 + 系统默认白底下拉"，
-   在深色面板上非常突兀。现在改成与面板同色系的深色底、淡描边，
-   并把图标换成 CSS 画的三角（原来那个系统箭头在深色底上几乎看不见）。 */
+   ⚠️ 这里改过两次，记下最终结论：
+   1. 原来容器是"白色半透明胶囊"，在深色面板上很突兀 → 改深色底 + 淡描边。
+   2. 用户真正指的是**下拉展开后的选项**（浏览器默认白底）与游戏不搭 →
+      见下面 select option 的说明。 */
 .ctl {
   position: relative;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   flex: 1 1 0;
   min-width: 0;
-  padding: 0;
+  padding: 0 6px;
   border-radius: var(--radius);
-  background: rgba(0, 0, 0, 0.16);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-/* CSS 三角形代替系统下拉箭头：系统箭头是深色位图，在深底上看不清 */
+/* 下拉框里的线性图标：用**淡色**（用户要求"清新、淡、不要和背景冲突"）。
+   比按钮文字更淡，起提示作用而不抢视线。 */
+.ctl > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: rgba(255, 252, 247, 0.62);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* CSS 三角代替系统下拉箭头：系统箭头是深色位图，在深底上看不清 */
 .ctl::after {
   content: '';
   position: absolute;
@@ -198,8 +224,7 @@ body {
   margin-top: -2px;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-top: 5px solid currentColor;
-  opacity: 0.7;
+  border-top: 5px solid rgba(255, 252, 247, 0.62);
   pointer-events: none;
 }
 
@@ -213,7 +238,7 @@ select {
   outline: none;
   cursor: pointer;
   width: 100%;
-  padding: 5px 22px 5px 9px;
+  padding: 6px 20px 6px 2px;
   border-radius: var(--radius);
   /* 去掉系统外观，否则深色底会被平台的白色控件覆盖 */
   -webkit-appearance: none;
@@ -222,10 +247,26 @@ select {
   text-align-last: center;
 }
 
-/* 下拉展开的列表由系统绘制，只能给选项上色 —— 用深底白字贴近面板 */
+/* ---------------------------------------------------------------------------
+   下拉展开后的选项
+   ---------------------------------------------------------------------------
+   ⚠️ 这里是用户真正指出的问题：之前用白底 + 深字，与整个暖色游戏完全不搭。
+
+   为什么不用 `transparent`：**原生下拉列表由操作系统绘制**，它需要不透明
+   背景才能保证可读（悬停/选中态是系统画的）。真设成透明，在某些平台会
+   出现"文字叠在背后的棋盘上"。所以做成**接近面板色的深色 + 半透明**，
+   视觉上与游戏一致，又不牺牲可读性。 */
 select option {
-  color: #2b1d1a;
-  background: #fdf6f0;
+  color: var(--panel-text);
+  /* color-mix 做半透明：在不支持的老浏览器上退化为纯色，仍然可读 */
+  background: #5c3d36;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  padding: 6px;
+}
+
+select option:checked {
+  background: var(--accent);
+  color: #17322e;
 }
 
 /* ---------------------------------------------------------------------------
@@ -234,23 +275,37 @@ select option {
    所有按钮图标都是内联 SVG（stroke 描边），**不用 emoji** ——
    emoji 是彩色实物图形，各平台长得不一样，也和整体线条风格不搭。
 
-   描边宽 1.8 是试出来的：1.5 在 18px 下发虚，2 以上显得笨重。
-   颜色用 currentColor，自动跟随按钮文字色（含 disabled 的降透明度）。 */
+   颜色：**淡色**（用户要求"清新一点、要淡的、不要和背景冲突"）。
+   暖白半透明在深棕面板上属于"低对比的浅色"，既不刺眼也不糊。
+   描边宽 1.7：18px 尺寸下比 1.8 更轻，比 1.5 更清楚。 */
 .icon-btn svg,
 .overlay button svg {
   width: 18px;
   height: 18px;
   flex: 0 0 auto;
   fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
+  stroke: rgba(255, 252, 247, 0.72);
+  stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 /* 只有「AI 自动演示」的播放三角用实心 —— 小尺寸下空心三角太弱 */
 #ai-auto svg {
-  fill: currentColor;
+  fill: rgba(255, 252, 247, 0.72);
+}
+
+/* 悬停/按下时图标跟着文字一起变亮，否则按钮亮了图标还是灰的 */
+button:hover:not(:disabled) svg {
+  stroke: var(--panel-text);
+}
+button:hover:not(:disabled) #ai-auto svg {
+  fill: var(--panel-text);
+}
+
+/* 棋盘上的 overlay 按钮是深底上的深底，图标用白一点更清楚 */
+.overlay button svg {
+  stroke: rgba(255, 255, 255, 0.9);
 }
 
 /* 图标数值按钮：图标 + 中文并排。尺寸由这组 padding 决定 ——
@@ -717,22 +772,9 @@ button.active {
   display: none;
 }
 
-.hint {
-  margin-top: 14px;
-  font-size: 12px;
-  line-height: 1.7;
-  color: rgba(255, 255, 255, 0.84);
-}
-
-kbd {
-  display: inline-block;
-  padding: 1px 6px;
-  margin: 0 1px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.22);
-  font-family: inherit;
-  font-size: 11px;
-}
+/* .hint 与 kbd 已随底部的快捷键提示段一起删除（用户要求界面无多余文字，
+   快捷键说明移进规则弹窗）。删样式不只是清理 —— 留着会让人以为
+   界面上还有那块内容。 */
 
 /* -------------------------------------------------------------- 无障碍 */
 
