@@ -29,8 +29,16 @@ function check(label, condition, detail = '') {
   }
 }
 
-function makeRenderer() {
-  const { document } = globalThis;
+/** 棋盘上**实际显示**的数字（从 DOM 读文字，不是读逻辑状态）。
+ *  撤销动画的"闪"正是显示层的问题 —— 逻辑状态一直是对的，
+ *  所以判据必须看 DOM，不能看 renderer.tiles。 */
+function domValues(renderer) {
+  return [...renderer.tilesLayer.querySelectorAll('.tile')]
+    .map((node) => Number(node.textContent))
+    .sort((a, b) => a - b);
+}
+
+function makeRenderer() {  const { document } = globalThis;
   const gridNode = document.createElement('div');
   const tilesNode = document.createElement('div');
   return {
@@ -239,6 +247,50 @@ console.log('renderer 冒烟测试：');
   const absorbed = result.moves.filter((m) => m.merged);
   check('两个 512 合成 1024：被吸收的 exponent 是 9', absorbed[0]?.exponent === 9);
   check('结果指数是 10（=1024，庆祝阈值）', result.board[0][0] === 10, `实际 ${result.board[0][0]}`);
+}
+
+// 8. 撤销动画
+//
+// 这条来自用户反馈："这个撤回动画怎么会一闪一闪的"。
+// 根因：合并块的**数值回退**原来发生在按下撤销的同一瞬间（t=0），
+// 而要走的那半块还要 140ms 才淡出 —— 画面上就是先闪一下。
+// 修法是把数值回退挪到"滑动"那一帧。这里把时序钉死。
+{
+  const { applyMove } = await import('../web/js/game.js');
+  const { renderer } = makeRenderer();
+
+  // 两个 2（指数 1）合成 4，再撤销回两个 2
+  const before = [[1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  const result = applyMove(before, DIRECTION.left);
+  const afterBoard = result.board; // 撤销前：一块 4
+
+  renderer.reset(afterBoard, { score: 4, best: 0 });
+  check('撤销前棋盘只有一块 4', tileCount(renderer) === 1, `实际 ${tileCount(renderer)}`);
+
+  const promise = renderer.animateUndo(before, 4, 0, 0);
+
+  // t=0（还没 await，也就是"按下撤销的那一帧"）：合并块必须**还没回退**。
+  // ⚠️ 判据是"那块 4 还在"，不是"没有 2"：渐显的块此时已经插入 DOM
+  // （带 .undo-appear，opacity:0，肉眼不可见），所以 DOM 里本来就会有 2。
+  const startValues = domValues(renderer);
+  check(
+    '按下撤销的瞬间，合并块的 4 还在（这是"一闪一闪"的回归点）',
+    startValues.includes(4),
+    `实际 [${startValues.join(',')}]`
+  );
+  const hidden = [...renderer.tilesLayer.querySelectorAll('.undo-appear')].length;
+  check('渐显的块此时是隐藏状态（挂着 .undo-appear）', hidden === 2, `实际 ${hidden} 个`);
+
+  await promise;
+
+  const valuesAfter = domValues(renderer);
+  check(
+    '动画结束后数值已回退成两个 2',
+    valuesAfter.filter((v) => v === 2).length === 2,
+    `实际 [${valuesAfter.join(',')}]`
+  );
+  check('动画结束后块数与撤销后的棋盘一致', tileCount(renderer) === 2, `实际 ${tileCount(renderer)}`);
+  check('撤销动画结束后 busy 为假', renderer.busy() === false);
 }
 
 console.log('');

@@ -368,17 +368,18 @@ export class Renderer {
         appearing.push(node);
       }
     }
+    // 强制一次重排：让浏览器**先把"透明"这个状态画出来**。
+    // 少了这一步，插入节点与挂类可能被合进同一帧，opacity 过渡从"已是 1"
+    // 开始算，方块会直接跳出来而不是渐显。
+    if (appearing.length > 0) void this.tilesLayer.offsetWidth;
 
-    // c) 配上的但不是"原位同值"：要滑动（数值变了还要回退数值）
-    //    原位同值的那些不进 pairs，省掉一次无意义的 transform 写入。
+    // c) 要滑动的块（原位同值的不进这里，省掉一次无意义的 transform 写入）
     const moving = pairs.filter((p) => p.from.row !== p.to.row || p.from.col !== p.to.col);
-    for (const { from, to } of moving) {
-      if (from.exponent !== to.exponent) {
-        this._setTileValue(from.node, from.id, to.exponent);
-      }
-    }
 
-    // 先播"退出 + 数值回退"，再整盘滑回去（顺序照用户确认的方案）
+    // 先播"淡出"，这一段里**数值不变**。
+    // ⚠️ 数值回退不能放在这里（放这里会"一闪一闪"）：合并成的那块当场从 4
+    // 变回 2，而要走的那半块还亮着 140ms，画面上就是先闪一下。
+    // 正确做法是下面和滑动同一帧改值 —— 视觉上就是"滑回来 + 分开"。
     await sleep(exitMs);
 
     // 渐显的块这时候才摘掉 .undo-appear：它们在上一段里保持透明，
@@ -391,7 +392,11 @@ export class Renderer {
       this.tiles.delete(c.id);
     }
 
+    // 数值回退 + 位移，同一帧发生
     for (const { from, to } of moving) {
+      if (from.exponent !== to.exponent) {
+        this._setTileValue(from.node, from.id, to.exponent);
+      }
       this._applyTransform(from.node, to.row, to.col, true);
       const tile = this.tiles.get(from.id);
       if (tile) {
