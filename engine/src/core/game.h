@@ -97,13 +97,30 @@ inline constexpr std::int32_t kHardWeightStrength = 35;  // 0.35
  * 而困难档的评分是若干惩罚项之和，极端局面下会累加到 1960（19.6 分），
  * 于是 `exp(19.6 × 0.85)` 直接把分布压成一个点。
  *
- * 饱和之后 strength 才能像文档预期的那样工作：0.35 配上 600 的上限，
- * max/min 权重比约 8 倍 —— 足以让"更不利的位置"稳定地更常出现，
+ * 饱和之后 strength 才能像文档预期的那样工作：0.35 配上 900 的上限，
+ * max/min 权重比约 23 倍 —— 足以让"更不利的位置"稳定地更常出现，
  * 又不会被单格垄断。
  *
  * ⚠️ 饱和**不改变排序**，只压缩极端值 —— 所以"哪个位置更不利"的判断不受影响。
  */
-inline constexpr int kScoreSaturation = 600;
+inline constexpr int kScoreSaturation = 900;
+
+/**
+ * 评分参与指数运算前的**下界**（百分数，负值）。
+ *
+ * 为什么要有下界、而不像早期那样把负分直接夹成 0：
+ *
+ * 早期写的是 `score < 0 ? 0 : score`，于是困难档的
+ * 「角落 −80 / 边缘 −30」两条惩罚**被整个吃掉** —— 角落格与那些得 0 分的
+ * 平庸格拿到完全相同的权重。"角落对玩家有利，所以不该往那儿放"这条设计意图
+ * 从未生效。实测（`spawn_probe`，20 万次采样）：角落格的落点份额与 0 分格
+ * 没有差别，最高分格只拿到 2.2 倍于均匀。
+ *
+ * 现在允许负分：`exp(负分 × 0.35/100)` 权重趋近于 0，于是角落被**真正避开**。
+ * 下界只是为了防止表格越界与浮点下溢，取 −400 远低于实际评分下限
+ * （最差组合是角+边 −110，再减去合并机会的 −192，约 −300）。
+ */
+inline constexpr int kScoreFloor = -400;
 
 [[nodiscard]] const char* DifficultyName(Difficulty difficulty) noexcept;
 
@@ -118,6 +135,24 @@ inline constexpr int kScoreSaturation = 600;
 
 /** 某个**空**格在困难档下的"不利分"（百分数整数，越大越不利）。 */
 [[nodiscard]] int HostileSpawnScore(std::uint64_t board, int index) noexcept;
+
+// ---------------------------------------------------------------------------
+// 权重表导出（给 tools/export_weight_table.cpp 用）
+//
+// 前端 `web/js/game.js` 里有一张**硬编码的权重表副本**，是为了让浏览器在
+// 连不上引擎时（退化为 LocalTransport）生成分布仍与引擎逐位一致。
+// 那张表必须从引擎导出，不能手写 —— 改了 strength / 饱和上限 / 下界之后
+// 若不同步重新导出，两边会**静默分叉**。
+//
+// 这几个访问器存在的唯一理由就是让导出工具拿到真值，避免它去猜常量。
+// ---------------------------------------------------------------------------
+
+/** 权重表里 score 的下界（表下标 0 对应的原始分数）。 */
+[[nodiscard]] int ExportScoreFloor() noexcept;
+/** 权重表里 score 的上界（饱和值）。 */
+[[nodiscard]] int ExportScoreSaturation() noexcept;
+/** 导出整张权重表。下标 i 对应 score = ExportScoreFloor() + i。 */
+[[nodiscard]] std::vector<std::int64_t> ExportWeightTableForTesting(bool hard);
 
 /**
  * 空格的**相对生成权重**，未归一化。

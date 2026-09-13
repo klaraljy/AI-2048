@@ -78,7 +78,10 @@ inline constexpr std::array<std::array<int, 2>, 4> kNeighbourOffsets = {
       if (exponent >= 6) score -= 30;  // 2^6 = 64 及以上的大块
     }
   }
-  return score < 0 ? 0 : score;
+  // ⚠️ 这里原来有一句 `score < 0 ? 0 : score`，与困难档那处的缺陷同源：
+  // 一个被 4 个大块围住的正中枢格会被夹回 0，与"平庸但无害"的格子同权 ——
+  // 而它其实是最该被避开的位置。现在允许负分（见 kScoreFloor）。
+  return score;
 }
 
 /** 贴着一个多大的块？越大越"不利"（块周围被堵住的价值更高）。 */
@@ -150,10 +153,16 @@ inline constexpr std::array<std::array<int, 2>, 4> kNeighbourOffsets = {
 
   // 困难档刻意**不**偏向角落：角落对玩家有利，一直往角上放会让
   // "角落策略"继续过强。
+  //
+  // ⚠️ 这两条惩罚以前**完全无效** —— 函数末尾有一句 `score < 0 ? 0 : score`，
+  // 而一个空角落格通常没有任何断裂点/贴大块的加分，本身就得 0 分，
+  // 减去 80 之后又被夹回 0。于是"不往角落放"这条设计意图从未生效：
+  // 实测角落格与平庸 0 分格的落点份额完全一样。
+  // 现在允许负分，负分对应的权重趋近 0（见 kScoreFloor）。
   if (IsCornerCell(row, col)) score -= 80;
   if (IsEdgeCell(row, col)) score -= 30;
 
-  return score < 0 ? 0 : score;
+  return score;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,34 +171,30 @@ inline constexpr std::array<std::array<int, 2>, 4> kNeighbourOffsets = {
 // ⚠️ **不能用 std::exp。** 本项目承诺"同种子逐字节一致"，而 libm 的 exp
 // 不保证跨编译器/平台逐位相同。这里是**查表**：score 是百分数整数，
 // strength 是 /100，所以指数就是 (score × strength) / 10000 —— 一个有理数。
-// 表的范围覆盖 score ∈ [0, 12.00]（一千二百项），足够宽：
-// 实测困难档的评分在 -400 ~ 800 之间。
+//
+// 表的下标从 kScoreFloor（负）起，覆盖 score ∈ [−4.00, +9.00]。
+// **负分是必需的**：困难档的角落/边缘惩罚是负的，把它夹成 0 就等于没有惩罚
+// （见 kScoreFloor 的说明）。负分对应的权重会下溢截断成 0 —— 这是**对的**，
+// 那种格子就该几乎不出块。
 //
 // 表用 double 算**一次**再取整。这不破坏可复现性：取值完全由源码里的
 // 常量与 IEEE-754 四则运算决定，任何平台上都得到同一张表。
-// 表本身（1201 个 int64）放进静态存储，只算一次。
 // ---------------------------------------------------------------------------
-inline constexpr int kWeightTableLimit = 1200;  // score 上限 12.00
+inline constexpr int kWeightTableLimit = kScoreSaturation;
 
 [[nodiscard]] const std::vector<std::int64_t>& WeightTable(bool hard) noexcept {
-  static const std::vector<std::int64_t> easy_table = [] {
-    std::vector<std::int64_t> table(kWeightTableLimit + 1);
-    for (int i = 0; i <= kWeightTableLimit; ++i) {
-      const double exponent = static_cast<double>(i) * kEasyWeightStrength / 10000.0;
-      table[static_cast<std::size_t>(i)] =
-          static_cast<std::int64_t>(std::exp(exponent) * 256.0 + 0.5);
+  const auto build = [](std::int32_t strength) {
+    std::vector<std::int64_t> table(static_cast<std::size_t>(kWeightTableLimit - kScoreFloor + 1));
+    for (int score = kScoreFloor; score <= kWeightTableLimit; ++score) {
+      const double exponent = static_cast<double>(score) * static_cast<double>(strength) / 10000.0;
+      const double scaled = std::exp(exponent) * 256.0 + 0.5;
+      table[static_cast<std::size_t>(score - kScoreFloor)] =
+          scaled < 1.0 ? 0 : static_cast<std::int64_t>(scaled);
     }
     return table;
-  }();
-  static const std::vector<std::int64_t> hard_table = [] {
-    std::vector<std::int64_t> table(kWeightTableLimit + 1);
-    for (int i = 0; i <= kWeightTableLimit; ++i) {
-      const double exponent = static_cast<double>(i) * kHardWeightStrength / 10000.0;
-      table[static_cast<std::size_t>(i)] =
-          static_cast<std::int64_t>(std::exp(exponent) * 256.0 + 0.5);
-    }
-    return table;
-  }();
+  };
+  static const std::vector<std::int64_t> easy_table = build(kEasyWeightStrength);
+  static const std::vector<std::int64_t> hard_table = build(kHardWeightStrength);
   return hard ? hard_table : easy_table;
 }
 
@@ -201,9 +206,11 @@ inline constexpr int kWeightTableLimit = 1200;  // score 上限 12.00
  * 达到千万量级，加权就退化成"必定落同一格"，也就是文档警告的「系统作弊感」。
  */
 [[nodiscard]] std::int64_t WeightFor(int score, bool hard) noexcept {
-  int saturated = score > kScoreSaturation ? kScoreSaturation : score;
-  if (saturated < 0) saturated = 0;
-  return WeightTable(hard)[static_cast<std::size_t>(saturated)];
+  // 上界饱和、下界截断。**不能把负分夹成 0** —— 那样困难档的角落/边缘惩罚
+  // 就等于没有（见 kScoreFloor 的说明，这是实际踩过的缺陷）。
+  int bounded = score > kScoreSaturation ? kScoreSaturation : score;
+  if (bounded < kScoreFloor) bounded = kScoreFloor;
+  return WeightTable(hard)[static_cast<std::size_t>(bounded - kScoreFloor)];
 }
 
 }  // namespace
@@ -215,6 +222,12 @@ int SafeSpawnScore(std::uint64_t board, int index) noexcept { return SafeScore(b
 int HostileSpawnScore(std::uint64_t board, int index) noexcept {
   return HostileScore(board, index);
 }
+
+int ExportScoreFloor() noexcept { return kScoreFloor; }
+
+int ExportScoreSaturation() noexcept { return kScoreSaturation; }
+
+std::vector<std::int64_t> ExportWeightTableForTesting(bool hard) { return WeightTable(hard); }
 
 std::array<double, kCellCount> SpawnCellWeights(std::uint64_t board,
                                                 Difficulty difficulty) noexcept {

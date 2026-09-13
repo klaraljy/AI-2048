@@ -469,8 +469,119 @@ TEST(DifficultySpawn, FourSpawnRateFollowsDifficulty) {
 }
 
 // ---------------------------------------------------------------------------
-// 随机流结构
+// 困难档必须**真正避开**角落与边缘
 // ---------------------------------------------------------------------------
+//
+// 这是补上的一课：原来的测试只检查"分布是否合理"（角落比均匀少、非角落仍会出现），
+// 于是**完全没发现**角落惩罚已经被吃掉了。
+//
+// 缺陷是这样的：`HostileScore` 末尾有一句 `return score < 0 ? 0 : score`，
+// 而一个空角落格本身没有任何断裂点/贴大块的加分，得 0 分，减去 80 之后
+// 又被夹回 0 —— 于是角落格与平庸的 0 分格拿到**完全相同**的权重，
+// 「角落对玩家有利，所以不该往那儿放」这条设计意图从未生效。
+// 实测：角落格与 0 分格的落点份额毫无差别（都是 ~5%），最高分格只拿到 2.2 倍。
+//
+// 现在允许负分（见 kScoreFloor），负分对应的权重趋近 0。用**权重**而不是
+// 落点份额来断言，是因为落点份额里混着 25% 的均匀兜底分支，
+// 那个比例是设计的一部分，会把差异稀释掉。
+
+TEST(DifficultyBias, HardPenalisesCornersInTheScore) {
+  // 一个只有角落有大牌、其余全空的盘面：角落格的敌对分必须**为负**。
+  // 大牌在角落附近本会加分（"靠近高价值块"），但角落惩罚应该盖过去 ——
+  // 这正是"不往角落放"的意思。
+  const std::uint64_t board = BoardMaxInCenter();
+  const int corner_score = HostileSpawnScore(board, 0);  // (0,0) 是角落
+  EXPECT_LT(corner_score, 0) << "角落格的敌对分是 " << corner_score
+                             << " —— 惩罚被夹成了非负值（旧缺陷回归）";
+}
+
+TEST(DifficultyBias, HardCornerWeightIsBelowTheAverageCell) {
+  // ⚠️ 断言要按**归一化权重**的口径写，不能凭"看起来该差很多"定阈值。
+  // SpawnWeights 返回的是归一化后的最终概率，而它里面**混着 25% 的均匀兜底**：
+  // 那一部分给每格相同的底，把任何比值都往 1 压。实测（单张大牌在中央、
+  // 15 个空格）：角落 0.0490、最佳格 0.10、均匀 0.0667 —— 比值只有 2.04。
+  //
+  // 所以这里断言的是**结构性质**而不是某个倍数：
+  // 角落格的权重必须**低于**平均，而最佳格必须**高于**平均。
+  // 这两条在任何盘面密度下都成立，且正是"往不利位置放、避开角落"的定义。
+  const std::uint64_t board = BoardMaxInCenter();
+  const std::array<double, kCellCount> weights = SpawnWeights(board, Difficulty::kHard);
+
+  int empty = 0;
+  double sum = 0.0;
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) == 0) {
+      ++empty;
+      sum += weights[static_cast<std::size_t>(i)];
+    }
+  }
+  ASSERT_GT(empty, 0);
+  const double mean = sum / static_cast<double>(empty);
+
+  // (0,0) 是角落：必须低于平均。
+  EXPECT_LT(weights[0], mean) << "角落权重 " << weights[0] << " 不低于平均 " << mean
+                              << " —— 角落惩罚没生效（旧缺陷回归）";
+
+  // 至少有一个格明显高于平均。
+  double best = 0.0;
+  for (int i = 0; i < kCellCount; ++i) {
+    if (GetExponent(board, i) == 0) best = std::max(best, weights[static_cast<std::size_t>(i)]);
+  }
+  EXPECT_GT(best, mean * 1.3) << "最高权重 " << best << " 不到平均 " << mean
+                              << " 的 1.3 倍 —— 偏置过弱";
+}
+
+TEST(DifficultyBias, HardCornerSpawnShareIsBelowUniform) {
+  // 端到端：角落格的实际落点份额必须**低于**均匀份额。
+  // 25% 的均匀兜底分支给每格 0.25/n 的底，所以角落不会归零，
+  // 但必须低于均匀值 —— 这正是"不往角落放"的可观测形式。
+  const std::uint64_t board = BoardMaxInCenter();
+  const int trials = 20000;
+  const std::vector<Sample> samples = SampleSpawns(Difficulty::kHard, board, trials);
+  const int total = Total(samples);
+  ASSERT_GT(total, 0);
+
+  const int empty = EmptyCount(board);
+  const double uniform = 1.0 / static_cast<double>(empty);
+
+  // (0,0) 是角落。
+  double corner_share = 0.0;
+  double best_other = 0.0;
+  for (const Sample& sample : samples) {
+    const double share = static_cast<double>(sample.count) / static_cast<double>(total);
+    if (sample.index == 0) {
+      corner_share = share;
+    } else {
+      best_other = std::max(best_other, share);
+    }
+  }
+  EXPECT_LT(corner_share, uniform)
+      << "角落份额 " << corner_share << " 不低于均匀 " << uniform << " —— 角落惩罚没生效";
+  // 最佳非角落格必须高于均匀。**不要**要求"2 倍均匀"：空格多的时候
+  // 25% 的均匀兜底把分布压得很平，实测最高格只有 1.5 倍均匀。
+  EXPECT_GT(best_other, uniform) << "最高分格的份额 " << best_other << " 不高于均匀 " << uniform
+                                 << " —— 偏置过弱";
+}
+
+TEST(DifficultyBias, EasyStillFavoursCorners) {
+  // 反过来验一遍：简单档的安全分里角落是 **+250**（正分），加权后角落应当
+  // 明显更常出现。这条保证上面那些改动没有把简单档一起改坏。
+  const std::uint64_t board = BoardMaxInCenter();
+  const std::vector<Sample> samples = SampleSpawns(Difficulty::kEasy, board, 20000);
+  const int total = Total(samples);
+  ASSERT_GT(total, 0);
+  const int empty = EmptyCount(board);
+  const double uniform = 1.0 / static_cast<double>(empty);
+
+  double corner_share = 0.0;
+  for (const Sample& sample : samples) {
+    if (sample.index == 0) {
+      corner_share = static_cast<double>(sample.count) / static_cast<double>(total);
+    }
+  }
+  EXPECT_GT(corner_share, uniform)
+      << "简单档的角落份额 " << corner_share << " 不高于均匀 " << uniform;
+}
 
 TEST(DifficultySpawn, DefaultDifficultyIsNormal) {
   // 默认难度必须是 normal：不传难度的调用方（跑批、自检、历史基准）
