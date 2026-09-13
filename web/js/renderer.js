@@ -261,6 +261,165 @@ export class Renderer {
   }
 
   /**
+   * 演示一次**撤销**。
+   *
+   * 为什么需要它：撤销原来是 `reset(game.board)` —— 整盘清空重画，方块直接
+   * **闪现**到原位，和走子时的滑动动画完全不是一个观感（用户 2026-09-13 报的）。
+   *
+   * 做法：不去改游戏逻辑（`Game` 的历史里只有棋盘快照，没有轨迹），
+   * 直接拿**两份棋盘**在渲染层反推：
+   *   - 撤销前棋盘（当前屏幕上这些方块）
+   *   - 撤销后棋盘（`history` 里那份 = 走子**之前**的状态）
+   *
+   * 逐格对照就能知道每一块该去哪：
+   *   1. 先删掉"当前有、目标没有"的块 —— 那些是走子时**新生成**的，
+   *      撤销时让它淡出（不是直接闪掉）。
+   *   2. 剩下的块按**数值相同 + 就近**配对到目标格：配对成功就滑过去。
+   *   3. 目标格上还没人认领的，说明那里原来有一块被**合并**掉了 ——
+   *      原地新建一块，从透明渐显。
+   *   4. 配不上目标格的块：滑到就近空格（只可能出现在"好几块合成一块"的情况，
+   *      视觉上一闪而过）。
+   *
+   * ⚠️ 已知的近似：两个相同数值合成一块后，**无法分辨哪一块是从哪边来的**
+   * （数据里没这个信息），所以按位置就近分配。两个块长得一样，看不出来。
+   *
+   * @param {number[][]} previousBoard 撤销**后**的指数棋盘
+   * @param {number} scoreBefore 撤销**前**的分数
+   * @param {number} scoreAfter 撤销后的分数
+   * @param {number} bestAfter
+   * @returns {Promise<void>} 动画结束时 resolve
+   */
+  async animateUndo(previousBoard, scoreBefore, scoreAfter, bestAfter) {
+    this._busy = true;
+    const reduced = prefersReducedMotion();
+    const slideMs = reduced ? 0 : TIMING.slide;
+    const exitMs = reduced ? 0 : 140;
+
+    /** 当前屏幕上的方块 */
+    const current = [];
+    for (const [id, tile] of this.tiles) {
+      const node = this.nodes.get(id);
+      if (node) current.push({ id, node, row: tile.row, col: tile.col, exponent: tile.exponent });
+    }
+
+    // ---- 第一步：先锁定"原位同值"的块，它们不动 ----
+    // 必须先做这一步。否则下面的就近配对会把留在原地的块也算进去，
+    // 反而让"走子时新生成的那块"匹配不上目标格、于是删不掉 ——
+    // 实测出现过"撤销后棋盘从 3 块变成 5 块"。
+    const claimed = new Set();
+    const claimedTargets = new Set();
+    const targets = [];
+    for (let row = 0; row < SIZE; row++) {
+      for (let col = 0; col < SIZE; col++) {
+        const exponent = previousBoard[row][col];
+        if (exponent === 0) continue;
+        const target = { row, col, exponent };
+        targets.push(target);
+        const staying = current.find(
+          (c) => !claimed.has(c.id) && c.row === row && c.col === col && c.exponent === exponent
+        );
+        if (staying) {
+          claimed.add(staying.id);
+          claimedTargets.add(target);
+        }
+      }
+    }
+
+    // ---- 第二步：剩下的当前块 → 剩下的目标格，全局最小总距离配对 ----
+    // 按距离从小到大贪心（不是逐格找最近），避免"某块被就近抢占后，
+    // 另一块被迫走很远、甚至配不上"。
+    const freeTiles = current.filter((c) => !claimed.has(c.id));
+    const freeTargets = targets.filter((t) => !claimedTargets.has(t));
+
+    const candidatePairs = [];
+    for (const tile of freeTiles) {
+      for (const target of freeTargets) {
+        if (tile.exponent !== target.exponent) continue;
+        candidatePairs.push({
+          tile,
+          target,
+          distance: Math.abs(tile.row - target.row) + Math.abs(tile.col - target.col),
+        });
+      }
+    }
+    candidatePairs.sort((a, b) => a.distance - b.distance);
+
+    const pairs = [];
+    for (const { tile, target } of candidatePairs) {
+      if (claimed.has(tile.id) || claimedTargets.has(target)) continue;
+      claimed.add(tile.id);
+      claimedTargets.add(target);
+      pairs.push({ from: tile, to: target });
+    }
+
+    // ---- 第三步：配对结果分三类处理 ----
+    // a) 没配上目标格的当前块：只可能是"走子时新生成的那块" → 淡出
+    const leaving = current.filter((c) => !claimed.has(c.id));
+    for (const c of leaving) c.node.classList.add('undo-out');
+
+    // b) 目标格上没人认领的：那里原来有一块被**合并**掉了 → 原地渐显
+    const appearing = [];
+    for (const target of freeTargets) {
+      if (claimedTargets.has(target)) continue;
+      const id = this._createTile(target.row, target.col, target.exponent, { animate: false });
+      const node = this.nodes.get(id);
+      if (node) {
+        node.classList.add('undo-appear');
+        appearing.push(node);
+      }
+    }
+
+    // c) 配上的但不是"原位同值"：要滑动（数值变了还要回退数值）
+    //    原位同值的那些不进 pairs，省掉一次无意义的 transform 写入。
+    const moving = pairs.filter((p) => p.from.row !== p.to.row || p.from.col !== p.to.col);
+    for (const { from, to } of moving) {
+      if (from.exponent !== to.exponent) {
+        this._setTileValue(from.node, from.id, to.exponent);
+      }
+    }
+
+    // 先播"退出 + 数值回退"，再整盘滑回去（顺序照用户确认的方案）
+    await sleep(exitMs);
+
+    // 渐显的块这时候才摘掉 .undo-appear：它们在上一段里保持透明，
+    // 现在与整盘滑动一起浮现。
+    for (const node of appearing) node.classList.remove('undo-appear');
+
+    for (const c of leaving) {
+      c.node.remove();
+      this.nodes.delete(c.id);
+      this.tiles.delete(c.id);
+    }
+
+    for (const { from, to } of moving) {
+      this._applyTransform(from.node, to.row, to.col, true);
+      const tile = this.tiles.get(from.id);
+      if (tile) {
+        tile.row = to.row;
+        tile.col = to.col;
+      }
+    }
+
+    this.setScore(scoreAfter, { animate: scoreAfter !== scoreBefore });
+    this.setBest(bestAfter);
+
+    await sleep(slideMs);
+
+    this._busy = false;
+  }
+
+  /** 把一块的数值改掉（文字、配色、data 属性一起改）。 */
+  _setTileValue(node, id, exponent) {
+    const value = 2 ** exponent;
+    node.className = `tile ${tileClass(value)} ${fontClass(value)}`;
+    node.dataset.value = String(value);
+    node.dataset.len = String(String(value).length);
+    node.textContent = String(value);
+    const tile = this.tiles.get(id);
+    if (tile) tile.exponent = exponent;
+  }
+
+  /**
    * 分数以**滚轮**方式变化：新数字从下方推上来（变大），或从上方压下来（变小）。
    *
    * 为什么不用数字逐位滚动：2048 的分数一次能涨几千，逐位滚会看不清也来不及。

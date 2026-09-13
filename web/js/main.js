@@ -206,10 +206,12 @@ async function applyStrength() {
 }
 
 const input = new Input({
-  boardElement: el.board,
   onMove: (direction) => void performMove(direction),
   // 查询式上锁：动画进行中或 AI 自动播放时丢弃玩家输入。
   isLocked: () => renderer.busy() || autoRunning || game === null || game.gameOver,
+  // 规则弹窗开着时：手指仍可拖动（能看规则），但不该走子。
+  // ⚠️ 判定用 `.show` 类（modal 的显隐方式），不是 `.hidden`。
+  isSwipeBlocked: () => el.rulesModal.classList.contains('show'),
   onUnlock: () => sound.unlock(),
   onRestart: () => newGame(),
   onUndo: () => void doUndo(),
@@ -330,12 +332,18 @@ function checkCelebration(mergedExponent) {
 
 async function doUndo() {
   if (renderer.busy()) return;
+  // 撤销前的分数：动画要把分数滚回旧值，需要知道从哪儿滚
+  const scoreBefore = game ? game.score : 0;
   if (!game || !game.undo()) return;
 
   sound.play('undo');
   hideOverlay();
   maxCelebrated = 0; // 撤销后允许重新庆祝
-  renderer.reset(game.board, { score: game.score, best });
+
+  // ⚠️ 这里原来是 `renderer.reset(game.board, ...)` —— 整盘清空重画，
+  // 方块**直接闪现**到原位，没有滑动动画（用户报的"撤回是直接闪现的"）。
+  // 现在走 animateUndo：拿撤销后的棋盘和屏幕上的现状对照，反推出反向滑动。
+  await renderer.animateUndo(game.board, scoreBefore, game.score, best);
   refreshBestHighlight();
   refreshControls();
 }

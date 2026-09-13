@@ -638,6 +638,11 @@ button.active svg {
   align-items: center;
   justify-content: center;
   gap: 4px;
+  /* 高度不够时允许收缩（棋盘是 1:1，跟着变矮变窄），但不许拉高。
+     没有这一条时，小屏上"上方控件 + 棋盘 + 下方提示"总高超过一屏，
+     棋盘会被挤出屏幕底部。 */
+  flex: 0 1 auto;
+  min-height: 0;
 }
 
 /* 两侧的庆祝轨道：不吃点击事件 */
@@ -814,6 +819,30 @@ button.active svg {
   animation: tile-merge 170ms ease-out;
 }
 
+/* ---------------------------------------------------------------------------
+   撤销动画用的两个状态类（见 renderer.animateUndo）
+   ---------------------------------------------------------------------------
+   撤销时不能用 .new / .merged：那两套动画会写 transform（缩放），
+   而撤销**同时**要做位移动画，两边的 transform 会打架。
+   这里只碰 opacity，位移交给 .tile 自己的 transition，互不干扰。
+
+   为什么用"先加类让它过渡"的写法而不是 animation：
+   新建的方块一插进 DOM 就是 opacity:1，直接加动画会从"已经显示"开始播，
+   看不到渐显。所以先挂 .undo-appear（opacity:0），下一帧再摘掉，
+   过渡才会真的从 0 走到 1。 */
+.tile {
+  /* transform 的过渡沿用上面那条；这里补 opacity，时长略短于滑动 */
+  transition: transform 110ms ease-in-out, opacity 120ms ease-out;
+}
+
+.tile.undo-out {
+  opacity: 0;
+}
+
+.tile.undo-appear {
+  opacity: 0;
+}
+
 /* 合并时飘出的 +N */
 @keyframes score-float {
   0% {
@@ -924,12 +953,21 @@ button.active svg {
   display: none;
 }
 
+/* 下半段：棋盘之下的所有内容（揭示条 + 提示行）合成一个块。
+   桌面上它没有自己的样式，只是给内容一个共同的父元素；
+   手机端布局用它当"下半段"与 .topbar 对称吸收剩余空间（见手机端那节）。 */
+.footer {
+  width: 100%;
+  /* 与棋盘之间留一段距离。放在这里而不是 .hint 的 margin-top：
+     揭示条（.notice）与提示行谁先显示不定，间距归 .footer 管才不会被叠加。 */
+  margin-top: 14px;
+}
+
 /* 快捷键提示。⚠️ 这不是"控件备注"—— 用户要求删的是下拉选项里的备注，
    操作提示要留着（我先前误删过一次，已恢复）。
    宽度与控件行、棋盘一致（--board-size），并且**文字居中排**（用户指定的 A 方案：
    整段文字在这 452px 里居中，而不是容器对齐、文字左起）。 */
 .hint {
-  margin-top: 14px;
   width: 100%;
   max-width: var(--board-size);
   margin-inline: auto;
@@ -965,6 +1003,55 @@ kbd {
   }
 }
 
+/* ---------------------------------------------------------------------------
+   手机端布局：棋盘上下居中
+   ---------------------------------------------------------------------------
+   用户 2026-09-13 要求："棋盘要在上下居中的位置，然后其他的也可以随着棋盘的
+   移动微调一下"。做法：.app 撑满一屏，用 `justify-content: center` 把**整块
+   内容**（标题 → 两行控件 → 棋盘 → 提示）在竖直方向居中。
+   于是标题之上与提示之下的空白自动相等，棋盘的位置随内容总高自动落在中间。
+
+   ⚠️ 这里连踩四个坑，全部实测过，别再重犯：
+   1. `.board-row { flex: 1 }` —— 棋盘只是在**行内**居中，行被拉高后顶到下方
+      内容之上，棋盘偏下 78px。
+   2. `.topbar { flex: 1 }` —— flex-grow 是在**各自内容高度之上**再分剩余空间，
+      .topbar 内容 64px、.footer 内容 113px，分到的空间差 99px，棋盘偏 49px。
+   3. 加一个零高度 `.spacer { flex: 1 1 auto }` 配 `.footer { flex: 1 1 auto }`
+      —— basis 为 auto 时仍是"内容高度 + 剩余空间"，两个盒子还是不等
+      （实测 120.8 / 234.2，差 113 = footer 内容高）。改成 basis 0 后两者相等
+      （177.5 / 177.5），但**棋盘仍然不居中**：因为把 355px 分给了这两个盒子，
+      留给棋盘上下两侧的只剩 171.5px，而标题+两行控件就有 343.5px。
+   4. 结论：**别去手工分配空间**。内容总高只有约 700px（一屏 915px），
+      让整块内容居中就够了；判据是"棋盘上留白 == 棋盘下留白"。
+
+   用 dvh 而不是 vh：手机浏览器地址栏收起/展开时 vh 不变，会把棋盘顶偏；
+   dvh 跟着可视高度走。老浏览器不认 dvh 时回退到上一条 100vh。
+   内容真的超过一屏时（小屏横屏），`safe center` 会退回顶部对齐，不会被裁。 */
+@media (max-width: 560px), (pointer: coarse) {
+  .app {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    /* safe：内容装不下时退回 flex-start，避免居中把顶部内容顶出屏幕外 */
+    justify-content: safe center;
+    justify-content: center;
+  }
+}
+
+/* 手机端：body 的上下内边距要去掉。
+   桌面端那 20px 是给页面留呼吸感的，但手机端 .app 撑满一屏时，它会把 .app
+   整体下推 20px —— 内容虽然相对 .app 居中了，相对**视口**却偏低 20px
+   （实测偏差正好 20.0）。棋盘要以屏幕中心线为准，所以这里清零。 */
+@media (max-width: 560px), (pointer: coarse) {
+  body {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+/* 小屏（手机竖屏）：两侧烟花轨道没有位置，直接收掉；
+   分数框也不再往中间偏，把宽度让给分数本身。 */
 @media (max-width: 420px) {
   .fx {
     display: none;

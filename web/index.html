@@ -191,22 +191,28 @@
         <canvas class="fx" id="fx-right" aria-hidden="true"></canvas>
       </div>
 
-      <div class="notice hidden" id="notice"></div>
-
-      <!-- 快捷键提示。这一段保留：它属于"操作提示"，不是控件备注。
-           规则弹窗里另有一份更完整的说明。 -->
       <!--
-        快捷键提示。宽度与控件行、棋盘一致并**居中排**（用户指定）：
-        见 style.css 里 .hint 的 max-width / text-align。
-        「移动，手机上直接滑动。」已按用户要求删掉 —— WASD 与方向键本身就
-        表示移动，这句是多余的说明。
+        下半段（.footer）：棋盘之下的所有内容。
+        手机端布局用它当"下半段"去吸收剩余空间，与 .topbar 对称 ——
+        两边各 flex:1，棋盘的上下留白就相等，也就是棋盘在屏幕上居中。
+        这两块不要再拆到 .footer 之外，否则居中会偏（见 style.css 的说明）。
       -->
-      <p class="hint">
-        <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> 或
-        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>　
-        <kbd>R</kbd> 重开，<kbd>U</kbd> 撤销，<kbd>M</kbd> 静音，
-        <kbd>空格</kbd> 让 AI 走一步。
-      </p>
+      <div class="footer">
+        <div class="notice hidden" id="notice"></div>
+
+        <!--
+          快捷键提示。宽度与控件行、棋盘一致并**居中排**（用户指定）：
+          见 style.css 里 .hint 的 max-width / text-align。
+          「移动，手机上直接滑动。」已按用户要求删掉 —— WASD 与方向键本身就
+          表示移动，这句是多余的说明。
+        -->
+        <p class="hint">
+          <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> 或
+          <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>　
+          <kbd>R</kbd> 重开，<kbd>U</kbd> 撤销，<kbd>M</kbd> 静音，
+          <kbd>空格</kbd> 让 AI 走一步。
+        </p>
+      </div>
     </div>
 
     <script type="module" src="./js/main.js"></script>

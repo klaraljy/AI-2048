@@ -34,20 +34,18 @@ function check(label, condition, detail = '') {
  * 每个 Input 实例都会往 keyListeners 里推一个 handler。
  * 所以这里先把已有的 handler 清掉，保证每个测试块只受**自己那个** Input 影响 ——
  * 否则上一块的 Input 也会响应，断言会看到重复的动作。 */
-function makeInput(lockState = { locked: false }) {
+function makeInput(lockState = { locked: false }, { swipeBlocked = () => false } = {}) {
   const received = [];
-  const { document } = globalThis;
-  const board = document.createElement('div');
   const input = new Input({
-    boardElement: board,
     onMove: (d) => received.push(d),
     isLocked: () => lockState.locked,
+    isSwipeBlocked: swipeBlocked,
     onUnlock: () => {},
     onRestart: () => received.push('RESTART'),
     onUndo: () => received.push('UNDO'),
     onToggleMute: () => received.push('MUTE'),
   });
-  return { input, received, board, lockState };
+  return { input, received, lockState };
 }
 
 /** 派发一个 keydown 到 window 的监听器上。 */
@@ -71,6 +69,35 @@ globalThis.window.addEventListener = (type, handler) => {
 globalThis.window.dispatchKeydown = (event) => {
   for (const handler of keyListeners) handler(event);
 };
+
+// document 也要能派发：滑动监听挂在 **document** 上（全屏可滑），不在棋盘上。
+// 为什么从棋盘搬到 document：手机上拇指常落在棋盘外，挂棋盘上那些拖动没反应。
+const docListeners = new Map();
+globalThis.document.addEventListener = (type, handler) => {
+  if (!docListeners.has(type)) docListeners.set(type, []);
+  docListeners.get(type).push(handler);
+};
+globalThis.document.dispatch = (type, event) => {
+  for (const handler of docListeners.get(type) || []) handler(event);
+};
+// setPointerCapture 的目标
+globalThis.document.documentElement = {
+  setPointerCapture() {},
+  releasePointerCapture() {},
+};
+
+/** 造一个"能被 closest 判定"的假元素。 */
+function fakeEl({ button = false, modal = false } = {}) {
+  return {
+    tagName: 'DIV',
+    closest(selector) {
+      // 选择器里同时含 button 与 .modal，这里按标记各自命中
+      if (button && selector.includes('button')) return this;
+      if (modal && selector.includes('.modal')) return this;
+      return null;
+    },
+  };
+}
 
 console.log('input.js 测试：');
 
@@ -169,14 +196,15 @@ console.log('input.js 测试：');
   check('tryMove 在解锁后产生动作', received.join(',') === 'up', received.join(','));
 }
 
-// 6. 滑动
+// 6. 滑动 —— 在**整页**任意位置都能触发走子（用户 2026-09-13 要求）
 {
   const state = { locked: false };
-  const { received, board } = makeInput(state);
+  const { received } = makeInput(state);
 
-  const swipe = (dx, dy) => {
-    board.dispatch('pointerdown', { pointerId: 1, clientX: 200, clientY: 200 });
-    board.dispatch('pointerup', { pointerId: 1, clientX: 200 + dx, clientY: 200 + dy });
+  // 关键：事件派发到 document，target 是普通元素（模拟点在棋盘外）
+  const swipe = (dx, dy, { target = fakeEl() } = {}) => {
+    globalThis.document.dispatch('pointerdown', { pointerId: 1, clientX: 200, clientY: 200, target });
+    globalThis.document.dispatch('pointerup', { pointerId: 1, clientX: 200 + dx, clientY: 200 + dy, target });
   };
 
   swipe(0, -60);
@@ -190,14 +218,55 @@ console.log('input.js 测试：');
   check('斜向滑动按主轴判定', received.join(',') === 'right', received.join(','));
 
   received.length = 0;
-  board.dispatch('pointerdown', { pointerId: 2, clientX: 200, clientY: 200 });
-  board.dispatch('pointerup', { pointerId: 2, clientX: 205, clientY: 203 });
+  globalThis.document.dispatch('pointerdown', { pointerId: 2, clientX: 200, clientY: 200, target: fakeEl() });
+  globalThis.document.dispatch('pointerup', { pointerId: 2, clientX: 205, clientY: 203, target: fakeEl() });
   check('位移过小视为点击，不产生动作', received.length === 0, received.join(','));
 
   received.length = 0;
   state.locked = true;
   swipe(0, -60);
   check('锁定期间滑动也被丢弃', received.length === 0, received.join(','));
+  state.locked = false;
+}
+
+// 7. 按钮 / 下拉框 / 弹窗上的拖动不算走子
+//    否则点「重来」「撤回」会变成走子 —— 这是全屏滑动最容易引入的回归。
+{
+  const state = { locked: false };
+  const { received } = makeInput(state);
+  const swipeOn = (target) => {
+    globalThis.document.dispatch('pointerdown', { pointerId: 1, clientX: 200, clientY: 200, target });
+    globalThis.document.dispatch('pointerup', { pointerId: 1, clientX: 200, clientY: 260, target });
+  };
+
+  swipeOn(fakeEl({ button: true }));
+  check('从按钮上起手的拖动不走子', received.length === 0, received.join(','));
+
+  received.length = 0;
+  swipeOn(fakeEl({ modal: true }));
+  check('在弹窗内的拖动不走子', received.length === 0, received.join(','));
+
+  received.length = 0;
+  swipeOn(fakeEl());
+  check('普通区域仍然能滑（排除项没有误伤全局）', received.join(',') === 'down', received.join(','));
+}
+
+// 8. isSwipeBlocked：能拖动但这次手势不算数（规则弹窗开着的场景）
+{
+  const state = { locked: false };
+  let blocked = true;
+  const { received } = makeInput(state, { swipeBlocked: () => blocked });
+  const swipe = () => {
+    globalThis.document.dispatch('pointerdown', { pointerId: 1, clientX: 200, clientY: 200, target: fakeEl() });
+    globalThis.document.dispatch('pointerup', { pointerId: 1, clientX: 200, clientY: 260, target: fakeEl() });
+  };
+
+  swipe();
+  check('被拦截时不走子', received.length === 0, received.join(','));
+
+  blocked = false;
+  swipe();
+  check('解除拦截后恢复走子', received.join(',') === 'down', received.join(','));
 }
 
 console.log('');
