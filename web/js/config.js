@@ -103,11 +103,29 @@ export const SPEED = {
   fast: { label: '快', intervalMs: 30 },
 };
 
+/**
+ * 速度选项（给下拉框用）。
+ *
+ * ⚠️ **只返回选项名，不拼任何备注**（用户 2026-09-13 明确要求）。
+ * 这里原来拼成 `慢 · 看它怎么想` / `中 · 正常观看` / `快 · 快速测试` ——
+ * 那些描述现在写在规则弹窗里。
+ *
+ * 这条与强度档的处理一致：**下拉框只显示选项名，说明全在规则里**。
+ */
 export function speedOptions() {
   return Object.entries(SPEED).map(([value, spec]) => ({
     value,
-    label: `${spec.label} · ${describeSpeed(value)}`,
+    label: spec.label,
     spec,
+  }));
+}
+
+/** 速度档的说明文字 —— 只给规则弹窗用。 */
+export function speedNotes() {
+  return Object.entries(SPEED).map(([value, spec]) => ({
+    label: spec.label,
+    intervalMs: spec.intervalMs,
+    note: describeSpeed(value),
   }));
 }
 

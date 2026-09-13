@@ -772,9 +772,24 @@ button.active {
   display: none;
 }
 
-/* .hint 与 kbd 已随底部的快捷键提示段一起删除（用户要求界面无多余文字，
-   快捷键说明移进规则弹窗）。删样式不只是清理 —— 留着会让人以为
-   界面上还有那块内容。 */
+/* 快捷键提示。⚠️ 这不是"控件备注"—— 用户要求删的是下拉选项里的备注，
+   操作提示要留着（我先前误删过一次，已恢复）。 */
+.hint {
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.84);
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 1px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.22);
+  font-family: inherit;
+  font-size: 11px;
+}
 
 /* -------------------------------------------------------------- 无障碍 */
 

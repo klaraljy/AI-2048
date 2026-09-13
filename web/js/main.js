@@ -20,6 +20,7 @@ import {
   strengthOptions,
   strengthsDetail,
   speedOptions,
+  speedNotes,
   specFor,
   toEngineConfig,
   requestTimeoutMs,
@@ -413,6 +414,11 @@ function rulesHtml() {
     .map((s) => `${s.label}：${s.note}`)
     .join('；');
 
+  // 速度档：间隔与用途都从 config.js 读，避免文案与实现分家。
+  const speedRows = speedNotes()
+    .map((s) => `<tr><td>${s.label}</td><td>${s.intervalMs} ms</td><td>${s.note}</td></tr>`)
+    .join('');
+
   return `
   <h3>怎么玩</h3>
   <ul>
@@ -456,7 +462,11 @@ function rulesHtml() {
   </p>
 
   <h3>AI 速度</h3>
-  <p class="rule-note">只影响"AI操作"连跑时每步之间的停顿，不影响 AI 的下棋水平。</p>
+  <table class="rule-table">
+    <tr><th>档位</th><th>每步之间的停顿</th><th>用途</th></tr>
+    ${speedRows}
+  </table>
+  <p class="rule-note">只影响「AI操作」连跑时每步之间的停顿，不影响 AI 的下棋水平。</p>
 
   <h3>快捷键</h3>
   <ul>
