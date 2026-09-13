@@ -38,13 +38,25 @@ const ENGINE_URL = readEngineUrl();
  *
  * 选项**不在 HTML 里写死** —— 否则参数字典就有两份（HTML 一份、config.js 一份），
  * 改了 JS 忘了 HTML 时，界面显示的和实际生效的会不一致，而且没有任何报错。
+ *
+ * ⚠️ **下拉框里只写选项名，绝不拼备注**（用户 2026-09-13 反复要求，共提四次）。
+ * 这里原来写的是：
+ *
+ *     node.textContent = option.note ? `${option.label}（${option.note}）` : option.label;
+ *
+ * 于是三个下拉框全都拖着一条长备注（"简单（80% 按「安全分」加权：偏向角落…）"）。
+ * 我前几轮只改了 config.js 的数据层，**没动这一行**，所以用户看到的始终没变 ——
+ * 因为备注根本不是在 config.js 里拼的，是在这里拼的。
+ *
+ * 现在只读 label。备注照旧由 `option.note` 提供给规则弹窗（rulesHtml）。
+ * 谁再想在这里拼备注，先看 `tests/main-structure.test.mjs` 里那条断言。
  */
 function fillSelect(select, options, defaultValue) {
   select.innerHTML = '';
   for (const option of options) {
     const node = document.createElement('option');
     node.value = option.value;
-    node.textContent = option.note ? `${option.label}（${option.note}）` : option.label;
+    node.textContent = option.label;
     if (option.value === defaultValue) node.selected = true;
     select.appendChild(node);
   }
@@ -512,7 +524,9 @@ function startAuto() {
   if (autoRunning) return;
   autoRunning = true;
   el.aiAuto.classList.add('active');
-  el.aiAuto.textContent = '⏸';
+  // ⚠️ 不写 el.aiAuto.textContent —— 那会把按钮里的 <svg> 一起删掉
+  // （图标之所以长期不显示，就是这两行造成的）。播放/暂停由 CSS 按
+  // button.active 切换 SVG 内两个 path，见 index.html 的 #ai-auto。
   el.aiAuto.title = '停止 AI 演示';
   refreshControls();
 
@@ -535,7 +549,6 @@ function stopAuto() {
     autoTimer = null;
   }
   el.aiAuto.classList.remove('active');
-  el.aiAuto.textContent = '▶';
   el.aiAuto.title = 'AI 自动演示';
   refreshControls();
 }

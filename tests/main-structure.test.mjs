@@ -26,6 +26,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { difficultyOptions, strengthOptions, speedOptions } from '../web/js/config.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..');
@@ -185,6 +186,130 @@ for (const rel of refs) {
 }
 check('index.html 引用的本地资源都存在', brokenRefs.length === 0, brokenRefs.join(', '));
 check('至少检查到几个资源引用', refs.length >= 2, `${refs.length} 个`);
+
+// ---------------------------------------------------------------------------
+console.log('\n[6] 下拉框里只有选项名，没有备注文字');
+// ---------------------------------------------------------------------------
+// 真实 bug 的教训（用户提了**四次**才被我改对）：
+// 「三个下拉框里的备注文字统统删掉」—— 我前几轮一直在改 config.js 的数据层
+// （去掉了 label 里拼的备注、把说明挪到规则弹窗），但界面**一点没变**。
+// 因为备注根本不是 config.js 拼的，是 main.js 的 fillSelect 拼的：
+//
+//     node.textContent = option.note ? `${option.label}（${option.note}）` : option.label;
+//
+// 三处下拉框共用这一个函数，所以改一处就够了 —— 而我一直没打开这个文件。
+//
+// 这条断言从**两个方向**夹住它：
+//   a) 源码方向：fillSelect 里只允许出现 `= option.label`，出现模板串/拼接就是回归；
+//   b) 数据方向：真正 import config.js，三个 options() 给出的 label
+//      必须不带任何备注痕迹（括号、间隔号、换行）。
+//      —— 这一条能抓住"从 config.js 侧把备注塞回 label"的改法。
+const fillStart = lines.findIndex((l) => /^function fillSelect/.test(l));
+let fillBody = '';
+if (fillStart >= 0) {
+  let depth = 0;
+  let started = false;
+  for (let i = fillStart; i < lines.length; i++) {
+    for (const ch of lines[i]) {
+      if (ch === '{') { depth++; started = true; }
+      else if (ch === '}') depth--;
+    }
+    fillBody += lines[i] + '\n';
+    if (started && depth === 0) break;
+  }
+} else {
+  check('找得到 fillSelect 函数', false);
+}
+const fillCode = fillBody.replace(/\/\/.*$/gm, '');
+
+check(
+  'fillSelect 只把 label 写进选项，不拼 note（这次 bug 的直接回归）',
+  /textContent\s*=\s*option\.label\s*;/.test(fillCode) &&
+    !/\$\{.*(note|label)/.test(fillCode) &&
+    !/option\.label\s*\+/.test(fillCode),
+  fillCode.match(/textContent[^;]*/)?.[0] ?? '（没找到赋值语句）'
+);
+
+// 数据方向：三个下拉框的 label 必须是"光名"，不含备注痕迹。
+const SUSPECT = /[（(·、：:\n]|--|——/;
+for (const [name, fn] of [
+  ['难度', difficultyOptions],
+  ['强度', strengthOptions],
+  ['速度', speedOptions],
+]) {
+  const bad = fn().filter((o) => SUSPECT.test(o.label));
+  check(
+    `${name}下拉框的 label 不带备注（例：${fn()[0].label}）`,
+    bad.length === 0,
+    bad.map((o) => o.label).join(' | ')
+  );
+}
+
+// 反向确认：备注**没有丢**，它们还在规则弹窗里（不能靠删数据来通过上面的断言）。
+const noteKeepers = [
+  ['强度', strengthOptions().every((o) => typeof o.note === 'string' && o.note.length > 0)],
+  ['难度', difficultyOptions().every((o) => typeof o.note === 'string' && o.note.length > 0)],
+  ['速度', main.includes('speedNotes()')],
+];
+check(
+  '备注只是移出下拉框，仍然保留给规则弹窗',
+  noteKeepers.every(([, ok]) => ok),
+  noteKeepers.filter(([, ok]) => !ok).map(([n]) => n).join(', ')
+);
+
+// ---------------------------------------------------------------------------
+console.log('\n[7] 带图标的按钮不会被 textContent 抹掉图标');
+// ---------------------------------------------------------------------------
+// 真实 bug 的教训：`#ai-auto`（AI操作）的图标**从来不显示**。
+// 根因是 `el.aiAuto.textContent = '▶'` —— 按钮的 textContent 是**整个按钮的
+// 文本**，一赋值就把里面的 <svg> 节点全部删掉。而且 `newGame()` 会调
+// `stopAuto()`，所以页面一打开图标就已经没了。
+//
+// 这类 bug 很难靠肉眼发现：按钮看起来"有内容"（有个 ▶ 字形），只是没图标、
+// 还比别的按钮窄。UI 检查脚本（真浏览器量 innerHTML）才把它揪出来。
+//
+// 判据：任何**含内联 <svg> 的按钮**，其 id 都不能出现在 `.textContent =` 的左边，
+// 也不能出现在 `.innerHTML =` 的左边。
+const buttonsWithSvg = [];
+for (const m of html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)) {
+  const [, attrs, inner] = m;
+  const id = attrs.match(/id="([^"]+)"/)?.[1];
+  if (id && /<svg\b/.test(inner)) buttonsWithSvg.push(id);
+}
+check(
+  'index.html 里能找到带内联 SVG 的按钮',
+  buttonsWithSvg.length >= 8,
+  buttonsWithSvg.join(', ')
+);
+
+const codeOnly = main.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+const clobbered = [];
+for (const id of buttonsWithSvg) {
+  // el.<name> 映射到该 id 的元素名
+  const names = [...elMap.entries()].filter(([, elId]) => elId === id).map(([n]) => n);
+  for (const name of names) {
+    const re = new RegExp(`el\\.${name}\\.(textContent|innerHTML)\\s*=`, 'g');
+    for (const hit of codeOnly.matchAll(re)) clobbered.push(`${name}.${hit[1]}`);
+  }
+}
+check(
+  '没有代码给"带图标的按钮"写 textContent / innerHTML（会删掉 SVG）',
+  clobbered.length === 0,
+  clobbered.join(', ')
+);
+
+// AI操作按钮的状态必须画在 SVG 里，而不是靠替换按钮文字。
+const aiAutoTag = html.match(/<button[^>]*id="ai-auto"[\s\S]*?<\/button>/)?.[0] ?? '';
+check(
+  'AI操作按钮在 SVG 里同时准备了播放与暂停两个图形',
+  /class="ai-play"/.test(aiAutoTag) && /class="ai-pause"/.test(aiAutoTag),
+  aiAutoTag.replace(/\s+/g, ' ').slice(0, 120)
+);
+check(
+  'main.js 只切换 active 类，不再替换按钮文字',
+  /el\.aiAuto\.classList\.(add|remove)\('active'\)/.test(codeOnly) &&
+    !/el\.aiAuto\.textContent/.test(codeOnly)
+);
 
 // ---------------------------------------------------------------------------
 console.log('\n----------------------------------------');

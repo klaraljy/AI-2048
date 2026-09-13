@@ -359,9 +359,22 @@ select option:checked {
   stroke-linejoin: round;
 }
 
-/* 只有「AI 自动演示」的播放三角用实心 —— 小尺寸下空心三角太弱 */
+/* 只有「AI 自动演示」的播放三角用实心 —— 小尺寸下空心三角太弱。
+   暂停态用同一位置的帧：两条竖线也是实心（fill）。
+   两个 path 同一帧内只显示一个，由 #ai-auto 上的 .active 切换。 */
 #ai-auto svg {
   fill: var(--icon-color, rgba(255, 252, 247, 0.72));
+}
+
+/* 播放 / 暂停两个状态互斥 */
+#ai-auto .ai-pause {
+  display: none;
+}
+#ai-auto.active .ai-play {
+  display: none;
+}
+#ai-auto.active .ai-pause {
+  display: block;
 }
 
 /* 悬停/按下时图标跟着文字一起变亮（往暖白走），否则按钮亮了图标还是暗的 */
@@ -548,6 +561,13 @@ button:disabled {
 button.active {
   background: var(--accent);
   color: #04322a;
+}
+
+/* 演示进行中：按钮底色变成 accent 青绿，图标必须跟着变成同一族的深色，
+   否则浅绿图标压在青绿底上几乎看不见（九色里最亮的那几个尤其明显）。 */
+button.active svg {
+  stroke: #04322a;
+  fill: #04322a;
 }
 
 /* ------------------------------------------------------------------ 棋盘 */

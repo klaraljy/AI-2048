@@ -98,10 +98,21 @@
           撤回
         </button>
 
-        <!-- 线性图标：播放三角 = 让 AI 连续走 -->
+        <!--
+          线性图标：播放三角（实心）/ 暂停双竖线 = 让 AI 连续走。
+          ⚠️ 两种状态**都画在 SVG 里**，不要退回"给按钮写 textContent"的老做法：
+          按钮的 textContent 是**整个按钮的文本**，一赋值就会把里面的 <svg> 节点
+          全部删掉。原来的 `el.aiAuto.textContent = '▶'` 就是这么把这个图标弄没的 ——
+          而且 newGame() 里会调 stopAuto()，所以**页面一打开图标就已经没了**，
+          表现为"这个按钮的图标永远不跟随配色"。
+        -->
         <button id="ai-auto" type="button" class="ghost icon-btn" title="AI 自动演示">
           <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M8 5.5v13l10-6.5z" />
+            <!-- 播放：实心三角 -->
+            <path class="ai-play" d="M8 5.5v13l10-6.5z" />
+            <!-- 暂停：两条竖线；默认隐藏，由 button.active 切换 -->
+            <path class="ai-pause" d="M9 5.5h3v13H9z" />
+            <path class="ai-pause" d="M15 5.5h3v13h-3z" />
           </svg>
           AI操作
         </button>
