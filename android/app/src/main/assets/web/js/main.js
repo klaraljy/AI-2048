@@ -681,11 +681,20 @@ function currentDifficulty() {
   return DIFFICULTY[value] ? value : DEFAULT_DIFFICULTY;
 }
 
-/**
-// 难度提示条（#difficulty-notice）已按用户要求删除 ——
-// "非标准难度的分数不可与基准比较"这条说明移进规则弹窗。
-// 这里保留一行注释而不是留一个空函数：死代码会让人以为还有行为。
-// 一并去掉的还有它引用的 isStandardDifficulty 导入（现已无人使用）。
+/*
+ * 难度提示条（#difficulty-notice）已按用户要求删除 ——
+ * "非标准难度的分数不可与基准比较"这条说明移进了规则弹窗。
+ * 这里保留一行注释而不是留一个空函数：死代码会让人以为还有行为。
+ * 一并去掉的还有它引用的 isStandardDifficulty 导入（现已无人使用）。
+ *
+ * ⚠️ **这段注释曾经把整个文件后半截注释掉过**：原来以块注释开头、内容却用
+ * 行注释写，而且**没有闭合符**，于是 JS 从这里一直吃到文件里下一个闭合符为止，
+ * toggleMute / updateMuteIcon / showNotice / boot() 全部失效 ——
+ * 用户看到的是"点音量按钮没反应、AI 也不动"。
+ *
+ * 最坑的是 **node --check 不会报错**：未闭合的块注释是合法语法。
+ * 所以语义检查抓不到这类问题，必须**在真浏览器里实际点一下**。
+ */
 
 function toggleMute() {
   const muted = sound.toggleMuted();

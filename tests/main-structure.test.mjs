@@ -312,6 +312,108 @@ check(
 );
 
 // ---------------------------------------------------------------------------
+console.log('\n[8] 注释符配对（未闭合的块注释会把后面整段代码吃掉）');
+// ---------------------------------------------------------------------------
+// 真实 bug（用户报"点击音量按钮没反应"）：
+// main.js 里有一段注释以块注释开头，内容却用 `//` 写，而且**没有闭合符**。
+// 于是 JS 从那一行起一直吃到文件里下一个闭合符为止 ——
+// toggleMute / updateMuteIcon / showNotice / boot() 全部变成注释，
+// **整个应用根本没启动**（没有新开局、没有事件绑定、AI 也不动）。
+//
+// ⚠️ 为什么现有检查全都漏掉了：**未闭合的块注释是合法语法**，
+// `node --check` 通过；函数文本还在文件里，只是不在任何作用域中；
+// 模块被 import 时也不报错。只有真去点那个按钮才会暴露。
+
+// 块注释开闭必须配对
+let blockOpen = 0;
+let blockClose = 0;
+let inBlockScan = false;
+let blockStartLine = 0;
+lines.forEach((line, index) => {
+  for (let c = 0; c < line.length; c++) {
+    if (!inBlockScan && line[c] === '/' && line[c + 1] === '*') {
+      inBlockScan = true;
+      blockStartLine = index + 1;
+      blockOpen++;
+      c++;
+    } else if (inBlockScan && line[c] === '*' && line[c + 1] === '/') {
+      inBlockScan = false;
+      blockClose++;
+      c++;
+    }
+  }
+});
+check(
+  `块注释开闭配对（开 ${blockOpen} / 闭 ${blockClose}）`,
+  blockOpen === blockClose && !inBlockScan,
+  inBlockScan ? `文件结束时仍在块注释里（起于第 ${blockStartLine} 行）` : `开=${blockOpen} 闭=${blockClose}`
+);
+//
+// ⚠️ 第一版判据写成"块注释里出现任何 `//`"，结果**误报了两处 URL**
+// （`https://` / `ws://`）。所以判据收紧到"行首"，并且**先拿已知样本自测**
+// —— 一个会误报的检查比没有检查更糟（这条在 lessons-learned 里写过，
+// 这里是第二次犯）。
+const detectorFixtures = [
+  { text: ['/**', '// 这是坏注释', 'function f() {}'], expect: true, name: '块注释里整行 //' },
+  { text: ['/**', ' * https://example.com 说明', ' */', 'function f() {}'], expect: false, name: 'URL 不算' },
+  { text: ['/**', ' * 正常 JSDoc', ' */'], expect: false, name: '正常 JSDoc' },
+  { text: ['/*', '// 坏', 'function f() {}'], expect: true, name: '普通块注释里整行 //' },
+];
+/** 检测"块注释里出现整行 //"，返回命中的行号。 */
+function findBlockCommentAbuse(sourceLines) {
+  const hits = [];
+  let open = false;
+  let start = 0;
+  sourceLines.forEach((line, index) => {
+    for (let c = 0; c < line.length; c++) {
+      if (!open && line[c] === '/' && line[c + 1] === '*') {
+        open = true;
+        start = index + 1;
+        c++;
+      } else if (open && line[c] === '*' && line[c + 1] === '/') {
+        open = false;
+        c++;
+      }
+    }
+    // 行级判断放在字符扫描之后：整行以 // 开头、且此刻仍在块注释里
+    if (open && line.trimStart().startsWith('//')) hits.push(index + 1);
+  });
+  return hits;
+}
+const fixtureFailures = detectorFixtures.filter(
+  (f) => findBlockCommentAbuse(f.text).length > 0 !== f.expect
+);
+check(
+  `检测器自测通过（${detectorFixtures.length} 个样本，含 URL 误报样本）`,
+  fixtureFailures.length === 0,
+  fixtureFailures.map((f) => f.name).join(', ')
+);
+
+const blockAbuse = findBlockCommentAbuse(lines);
+check(
+  '块注释里没有整行以 // 写的内容（这次 bug 的形态）',
+  blockAbuse.length === 0,
+  blockAbuse.length ? `第 ${blockAbuse.join(', ')} 行` : ''
+);
+
+// 关键函数必须在**顶层**（顶格）。被吃掉时它们仍在文件里、只是不在任何作用域中，
+// 所以"文本存在"不能当判据，必须看它是不是顶格。
+const mustBeTopLevel = [
+  'function toggleMute',
+  'function updateMuteIcon',
+  'function showNotice',
+  'async function boot',
+  'async function performMove',
+  'function newGame',
+];
+const notTopLevel = mustBeTopLevel.filter((sig) => !lines.some((l) => l.startsWith(sig)));
+check(
+  '关键函数都在顶层作用域（没被注释掉、也没掉进别人肚子里）',
+  notTopLevel.length === 0,
+  notTopLevel.map((s) => s.replace(/^(async )?function /, '')).join(', ')
+);
+
+// ---------------------------------------------------------------------------
 console.log('\n----------------------------------------');
 if (failures > 0) {
   console.error(`main.js 结构一致性：${failures} 项失败`);
