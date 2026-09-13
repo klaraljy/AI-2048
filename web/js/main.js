@@ -194,6 +194,23 @@ function currentInterval() {
 }
 
 /**
+ * 当前速度档是否要**跳过方块动画**（见 config.js 的 SPEED.instant）。
+ *
+ * 只有"测试"档为真 —— 那一档的用途就是尽快跑出结果，演出没有意义。
+ * 慢/中/快三档照常演动画（用户明确要求"快"档也要有动画）。
+ *
+ * `instantOverride` 是测试用的强制开关：验收"快慢两档结果必须一致"时，
+ * 需要在同一节奏下只切换这一个变量。
+ */
+let instantOverride = null;
+
+function isInstantSpeed() {
+  if (instantOverride !== null) return instantOverride;
+  const spec = SPEED[el.speed ? el.speed.value : 'medium'];
+  return Boolean(spec && spec.instant);
+}
+
+/**
  * 把当前强度与难度告诉引擎，并同步前端的等待超时。
  *
  * 三件事必须一起做：只改引擎不改超时，或只改强度不改难度，都会出问题。
@@ -293,7 +310,9 @@ async function performMove(direction) {
   if (!step.moved) return false;
 
   lastMove = direction;
-  await renderer.animateMove(step, before, game.score, best);
+  // 快档跳过动画：跑测试时"尽量快出结果"（见 config.js 的 SPEED.instant）。
+  // 只跳演出，不跳计算 —— 分数与其它档完全一致。
+  await renderer.animateMove(step, before, game.score, best, { instant: isInstantSpeed() });
 
   if (game.score > best) {
     best = game.score;
@@ -811,6 +830,19 @@ async function boot() {
         col: t.col,
         value: 2 ** t.exponent,
       })),
+    /**
+     * 强制开/关"跳过动画"（测试用）。
+     *
+     * 平时由速度档决定（快档跳），但测试"快慢两档结果必须一致"时需要
+     * 在同一节奏下只切换这一个变量，所以要能单独指定。
+     * 传 null 恢复由速度档决定。
+     */
+    setInstantForTest: (value) => {
+      instantOverride = value;
+      return instantOverride;
+    },
+    /** 动画是否进行中（测试用来等一步走完）。 */
+    isBusy: () => renderer.busy(),
     /** 当前这一局的种子 —— 复现问题时需要它。 */
     currentSeed: () => (game ? game.seed : null),
   };

@@ -73,12 +73,25 @@ async function main() {
   check('stepsAhead(8) = 4 步', stepsAhead(8) === 4, String(stepsAhead(8)));
 
   console.log('\n[2] 速度档位定义');
-  check('三档存在：慢 / 中 / 快', Object.keys(SPEED).length === 3, Object.keys(SPEED).join(','));
+  // 四档：慢 / 中 / 快 是给人看的演示档（都播动画），
+  // "测试"是第四档，跳过动画只为尽快出结果（用户 2026-09-13 要求）。
+  check('四档存在：慢 / 中 / 快 / 测试', Object.keys(SPEED).length === 4, Object.keys(SPEED).join(','));
   check(
-    '间隔递减（慢 > 中 > 快）',
+    '间隔递减（慢 > 中 > 快 > 测试）',
     SPEED.slow.intervalMs > SPEED.medium.intervalMs &&
-      SPEED.medium.intervalMs > SPEED.fast.intervalMs,
-    `${SPEED.slow.intervalMs} / ${SPEED.medium.intervalMs} / ${SPEED.fast.intervalMs}`
+      SPEED.medium.intervalMs > SPEED.fast.intervalMs &&
+      SPEED.fast.intervalMs > SPEED.test.intervalMs,
+    `${SPEED.slow.intervalMs} / ${SPEED.medium.intervalMs} / ${SPEED.fast.intervalMs} / ${SPEED.test.intervalMs}`
+  );
+  check(
+    '只有"测试"档跳过动画（慢/中/快都必须有动画 —— 用户明确要求快档也演）',
+    SPEED.slow.instant !== true &&
+      SPEED.medium.instant !== true &&
+      SPEED.fast.instant !== true &&
+      SPEED.test.instant === true,
+    Object.entries(SPEED)
+      .map(([k, v]) => `${k}=${v.instant}`)
+      .join(' ')
   );
 
   console.log('\n[3] 超时必须大于引擎的思考预算');

@@ -90,17 +90,33 @@ export function strengthsDetail() {
  * 自动演示的速度：**两步之间的间隔**（毫秒）。
  *
  * 语义按用户的说法定死：
- *   慢 = 看它怎么想（有停顿，看得清每一步）
- *   中 = 正常观看
- *   快 = 快速测试（几乎不停，尽快出结果）
+ *   慢   = 看它怎么想（有停顿，看得清每一步）
+ *   中   = 正常观看
+ *   快   = 快速演示（几乎不停，但仍然播方块动画）
+ *   测试 = **除去动画**，只为尽快跑出结果
  *
- * 注意这里只是"间隔"。引擎**思考**用多久由 STRENGTH.budgetMs 决定 ——
- * 两者是独立的旋钮：想看慢但算得快，把速度调慢即可，不必降低强度。
+ * 注意"间隔"只是其中一个旋钮。引擎**思考**用多久由 STRENGTH.budgetMs 决定 ——
+ * 两者独立：想看慢但算得快，把速度调慢即可，不必降低强度。
+ *
+ * ## `instant`：跳过方块动画（用户 2026-09-13 要求）
+ *
+ * 量过之后发现**间隔根本不是瓶颈**："快"档的间隔本来就只有 30ms，
+ * 而一次方块动画是 slide 80 + 合并/新块 130 ≈ 210ms —— 时间几乎全花在动画上，
+ * 纯逻辑只要约 6ms 一步。
+ *
+ * ⚠️ 用户明确要求**不要**让"快"档跳动画（那一档还是要给人看的），
+ * 跳动画单独做成"测试"档。所以这是**第四个选项**，不是把快档改掉。
+ *
+ * ⚠️ 只跳"演出"，不跳计算：`game.step` 照常完整执行。
+ * 也就是说**测试档跑出来的分数与其它档完全相同**，只是不演过程 ——
+ * 有测试专门校验这一点（同种子同序列，快慢两档分数与盘面必须一致）。
  */
 export const SPEED = {
-  slow: { label: '慢', intervalMs: 160 },
-  medium: { label: '中', intervalMs: 80 },
-  fast: { label: '快', intervalMs: 30 },
+  slow: { label: '慢', intervalMs: 160, instant: false },
+  medium: { label: '中', intervalMs: 80, instant: false },
+  fast: { label: '快', intervalMs: 30, instant: false },
+  // 间隔给 0：动画已经跳了，再留间隔就是白等。真正的节流由"引擎思考多久"决定。
+  test: { label: '测试', intervalMs: 0, instant: true },
 };
 
 /**
@@ -131,7 +147,8 @@ export function speedNotes() {
 
 function describeSpeed(value) {
   if (value === 'slow') return '看它怎么想';
-  if (value === 'fast') return '快速测试';
+  if (value === 'fast') return '快速演示（仍有动画）';
+  if (value === 'test') return '除去动画，只为尽快跑出结果';
   return '正常观看';
 }
 

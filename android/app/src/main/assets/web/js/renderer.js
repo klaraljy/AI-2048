@@ -261,10 +261,27 @@ export class Renderer {
    * @param {number} bestAfter
    * @returns {Promise<void>} 动画结束时 resolve
    */
-  async animateMove(step, beforeBoard, scoreAfter, bestAfter) {
+  async animateMove(step, beforeBoard, scoreAfter, bestAfter, { instant = false } = {}) {
     // 打断上一次动画：先把它的残留收尾，避免两层动画互相踩。
     this._runPendingCleanups();
     this._busy = true;
+
+    /**
+     * 瞬时模式：不播任何过渡，直接把这一步落到终态。
+     *
+     * 用户要求"测试速度再快一点"。量过之后发现瓶颈**不是**间隔设置：
+     * "快"档的间隔只有 30ms，而一次动画是 slide 80 + merge/appear 130 ≈ 210ms，
+     * 动画吃掉了几乎全部时间（纯逻辑只要约 6ms 一步）。
+     * 所以快档下直接跳过动画，让跑批测试真正快起来。
+     *
+     * ⚠️ 只影响**观感**，不影响结果：`game.step` 早就同步算完了，
+     * 这里只是不演。所以"快档跑的分数"与"慢档跑的分数"完全一致。
+     */
+    if (instant) {
+      this._applyMoveInstant(step, scoreAfter, bestAfter);
+      this._busy = false;
+      return;
+    }
 
     /**
      * 本次动画的代次。**每一个 `await` 之后都必须重新校验它** ——
@@ -361,6 +378,88 @@ export class Renderer {
   }
 
   /**
+   * 把一步**直接落到终态**，不播任何过渡（快档跑测试用）。
+   *
+   * 与 `animateMove` 的区别只有"演不演"：这里不加过渡、不排合并弹跳、
+   * 新块也不做缩放淡入。账必须结得**一样全** —— 少结一样就会出现
+   * 我之前踩过的那种"渲染层与逻辑不一致"。
+   */
+  _applyMoveInstant(step, scoreAfter, bestAfter) {
+    const idAt = new Map();
+    for (const [id, tile] of this.tiles) idAt.set(`${tile.row},${tile.col}`, id);
+
+    const absorbed = [];
+    const mergedTargets = [];
+
+    for (const move of step.moves) {
+      const fromKey = `${move.fromRow},${move.fromCol}`;
+      const id = idAt.get(fromKey);
+      if (id === undefined) continue;
+      idAt.delete(fromKey);
+
+      const node = this.nodes.get(id);
+      if (!node) continue;
+      this._applyTransform(node, move.toRow, move.toCol, false);
+      const tile = this.tiles.get(id);
+      if (tile) {
+        tile.row = move.toRow;
+        tile.col = move.toCol;
+      }
+
+      if (move.merged) {
+        absorbed.push({ id });
+      } else {
+        const mergedHere = step.moves.some(
+          (m) => m.merged && m.toRow === move.toRow && m.toCol === move.toCol
+        );
+        if (mergedHere) mergedTargets.push({ id, exponent: move.exponent });
+      }
+    }
+
+    for (const { id, exponent } of mergedTargets) {
+      this._setTileValue(this.nodes.get(id), id, exponent);
+    }
+    for (const { id } of absorbed) {
+      const node = this.nodes.get(id);
+      if (node) node.remove();
+      this.nodes.delete(id);
+      this.tiles.delete(id);
+    }
+    if (step.spawned && step.spawn) {
+      this._createTile(step.spawn.row, step.spawn.col, step.spawn.exponent, { animate: false });
+    }
+
+    // 分数与最高分照常更新，只是不滚不飘 —— 数值必须一致，不然跑批的分数没意义
+    this.setScore(scoreAfter, { animate: false });
+    this.setBest(bestAfter);
+  }
+
+  /**
+   * 撤销的瞬时版：不播过渡，直接摆到"撤销后"的棋盘。
+   *
+   * 一致性上最稳的做法其实是**按目标棋盘整盘重建**（`reset` 的语义），
+   * 因为撤销不需要保留方块身份 —— 撤销后的局面就是一份棋盘快照。
+   * 走 animateUndo 那套配对是为了**动画**（让方块看起来滑回去），
+   * 不演的时候那份配对纯属多余，直接重建更不容易出错。
+   */
+  _undoInstant(previousBoard, scoreAfter, bestAfter) {
+    this.tilesLayer.innerHTML = '';
+    this.nodes.clear();
+    this.tiles.clear();
+    this.nextId = 1;
+
+    for (let row = 0; row < SIZE; row++) {
+      for (let col = 0; col < SIZE; col++) {
+        const exponent = previousBoard[row][col];
+        if (exponent === 0) continue;
+        this._createTile(row, col, exponent, { animate: false });
+      }
+    }
+    this.setScore(scoreAfter, { animate: false });
+    this.setBest(bestAfter);
+  }
+
+  /**
    * 演示一次**撤销**。
    *
    * 为什么需要它：撤销原来是 `reset(game.board)` —— 整盘清空重画，方块直接
@@ -389,10 +488,19 @@ export class Renderer {
    * @param {number} bestAfter
    * @returns {Promise<void>} 动画结束时 resolve
    */
-  async animateUndo(previousBoard, scoreBefore, scoreAfter, bestAfter) {
+  async animateUndo(previousBoard, scoreBefore, scoreAfter, bestAfter, { instant = false } = {}) {
     // 与 animateMove 同理：打断上一次动画，先收尾再开始
     this._runPendingCleanups();
     this._busy = true;
+
+    // 瞬时模式：撤销同样直接落终态（快档跑测试时用）。
+    // 这里不追求"演出效果"，只要求终局状态与 animateUndo 完全一致 ——
+    // 所以复用同一套配对逻辑，只是把所有时长设为 0、不挂过渡类。
+    if (instant) {
+      this._undoInstant(previousBoard, scoreAfter, bestAfter);
+      this._busy = false;
+      return;
+    }
     // 代次守卫，理由见 animateMove（被打断的动画必须立刻停手）
     const generation = this._generation;
     const superseded = () => generation !== this._generation;
