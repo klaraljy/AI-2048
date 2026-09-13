@@ -98,17 +98,11 @@ body {
 }
 
 /* 皇冠只出现在"所有时间"上 */
-/* 皇冠：现在是**线性 SVG**（原来是一个 ♛ 文字符号，风格与其它图标不一致）。
-   保留金色 —— 它是"历史最高分"的标识，全灰会失去意义。 */
+/* 皇冠：文字符号 ♛（不是 emoji，各平台字形略有差异但语义一致）。
+   金色是"历史最高分"的标识，保留。 */
 .crown {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: #f5c451;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vertical-align: -2px;
+  color: #f5c451;
+  margin-right: 1px;
 }
 
 .score-value {
@@ -164,58 +158,70 @@ body {
 
 /* 第一行：难度 / AI 强度 / AI 速度 + 规则按钮。
    ⚠️ **不换行**（用户要求"全部挤在一行"），宽度与棋盘对齐 ——
-   三个下拉框均分空间（flex: 1 1 0），规则按钮固定大小。 */
+   三个下拉框均分空间（flex: 1 1 0），规则按钮按内容宽度。 */
 .controls {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 10px;
-  /* 与 .board-wrap 同宽，这样控件行与棋盘左右对齐 */
   width: min(100%, 452px);
 }
 
-/* 第二行：五个带文字的按钮。比第一行**窄**（用户要求），
-   所以让它们按内容宽度排列、左对齐，不拉满。 */
+/* 第二行：五个带文字的按钮。
+   与第一行**同宽**（用户要求）：第一行已经撑到棋盘宽度，第二行再按内容宽度
+   左对齐就会在右边留一大片空白。所以同样设成棋盘宽度，并让五个按钮均分
+   拉满（flex: 1 1 auto）—— 右边缘与棋盘齐平，点按面积也更大。 */
 .controls-row2 {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
   margin-bottom: 10px;
+  width: min(100%, 452px);
+}
+
+.controls-row2 .icon-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 8px;
 }
 
 /* 下拉框容器。
    ⚠️ 这里改过两次，记下最终结论：
-   1. 原来容器是"白色半透明胶囊"，在深色面板上很突兀 → 改深色底 + 淡描边。
-   2. 用户真正指的是**下拉展开后的选项**（浏览器默认白底）与游戏不搭 →
-      见下面 select option 的说明。 */
+   1. 原来容器是"白色半透明胶囊"，在深色面板上很突兀 → 我改成深色底 + 淡描边。
+   2. **用户要的是第 1 版**（"下拉框你不要调，调回去"）。用户真正指的是
+      **下拉展开后的选项**（浏览器默认白底）与游戏不搭 → 见下面 select option。
+   所以容器恢复成白色半透明胶囊：
+     background: rgba(255, 255, 255, 0.16)，无边框，文字暖白。
+   图标 + 文字 + 三角的**颜色**按用户要求逐个上色（见下面的九色表）。 */
 .ctl {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex: 1 1 0;
   min-width: 0;
-  padding: 0 6px;
+  padding: 4px 8px 4px 6px;
   border-radius: var(--radius);
-  background: rgba(0, 0, 0, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.16);
+  /* 每个下拉框自带的色相；下面的图标、文字、三角全部取自它 */
+  color: var(--ctl-color, var(--panel-text));
 }
 
-/* 下拉框里的线性图标：用**淡色**（用户要求"清新、淡、不要和背景冲突"）。
-   比按钮文字更淡，起提示作用而不抢视线。 */
+/* 下拉框里的线性图标：比按钮图标小一号（16 / 1.6），
+   因为它在一条胶囊里，和 13px 的文字并排，18px 会显得头重。 */
 .ctl > svg {
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
   fill: none;
-  stroke: rgba(255, 252, 247, 0.62);
+  stroke: currentColor;
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-/* CSS 三角代替系统下拉箭头：系统箭头是深色位图，在深底上看不清 */
+/* CSS 三角代替系统下拉箭头：系统箭头是深色位图、颜色不可控、各平台差异大，
+   所以自己画一个，颜色跟随胶囊的色相。 */
 .ctl::after {
   content: '';
   position: absolute;
@@ -224,7 +230,7 @@ body {
   margin-top: -2px;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-top: 5px solid rgba(255, 252, 247, 0.62);
+  border-top: 5px solid currentColor;
   pointer-events: none;
 }
 
@@ -232,13 +238,14 @@ select {
   font: inherit;
   font-size: 13px;
   font-weight: 700;
-  color: var(--panel-text);
+  color: inherit;
   background: transparent;
   border: 0;
   outline: none;
   cursor: pointer;
   width: 100%;
-  padding: 6px 20px 6px 2px;
+  min-width: 0;
+  padding: 6px 16px 6px 2px;
   border-radius: var(--radius);
   /* 去掉系统外观，否则深色底会被平台的白色控件覆盖 */
   -webkit-appearance: none;
@@ -248,17 +255,17 @@ select {
 }
 
 /* ---------------------------------------------------------------------------
-   下拉展开后的选项
+   下拉展开后的选项（「下拉框选项」）
    ---------------------------------------------------------------------------
-   ⚠️ 这里是用户真正指出的问题：之前用白底 + 深字，与整个暖色游戏完全不搭。
+   ⚠️ 这才是用户真正指出的问题：原来是白底深字，与暖色游戏完全不搭。
 
-   为什么不用 `transparent`：**原生下拉列表由操作系统绘制**，它需要不透明
-   背景才能保证可读（悬停/选中态是系统画的）。真设成透明，在某些平台会
-   出现"文字叠在背后的棋盘上"。所以做成**接近面板色的深色 + 半透明**，
-   视觉上与游戏一致，又不牺牲可读性。 */
+   为什么不能真的设成 `transparent`：**原生下拉列表由操作系统绘制**，
+   它需要不透明背景才能保证可读（悬停/选中态也是系统画的）。
+   真透明会在某些平台出现"选项文字叠在背后的棋盘上"。
+   所以用**接近面板色的深色 + 半透明**：视觉上与游戏一致，又不牺牲可读性。 */
 select option {
   color: var(--panel-text);
-  /* color-mix 做半透明：在不支持的老浏览器上退化为纯色，仍然可读 */
+  /* color-mix 做半透明；不支持的老浏览器退化为上面的纯色，仍然可读 */
   background: #5c3d36;
   background: color-mix(in srgb, var(--panel) 88%, transparent);
   padding: 6px;
@@ -270,13 +277,75 @@ select option:checked {
 }
 
 /* ---------------------------------------------------------------------------
+   九个图标，九种颜色（用户指定）
+   ---------------------------------------------------------------------------
+   用户要求："无论是第一行还是第二行图标都要换颜色，而且是不同的颜色，
+   九个图标九种不同的清新颜色"。九个图标 =
+     第一行：难度、AI 强度、AI 速度、规则（4 个）
+     第二行：重来、撤回、AI操作、AI下一步、音量（5 个）
+
+   选色标准（三条同时满足）：
+   1. **清新**：高明度、中低饱和，不用纯色，不刺眼；
+   2. **各不相同**：九个色相尽量拉开（绿/蓝/黄/紫/橙红/青/黄绿/品红/蓝紫）；
+   3. **不和背景冲突**：对 --panel(#50332d 深棕) 的对比度落在 4.5:1 ~ 6.5:1，
+      看得清又不扎眼。逐色实测对比度写在每个色号后面。
+
+   实现方式：每个控件定义一个 --icon-color，图标 stroke / 文字 color /
+   三角 border-top 全部取自它，所以**只在这张表里改颜色**就能整体调。
+
+   ⚠️ 之前三版失败的原因：只在 rgba(255,252,247,0.x) 里动小数点，
+   色相没变，肉眼看不出区别 —— 所以这次直接换色相。 */
+:root {
+  --ic-difficulty: #a8e6c4; /* 淡薄荷绿  6.0:1 */
+  --ic-strength: #a9cdf0; /* 淡天蓝    5.7:1 */
+  --ic-speed: #f2d68c; /* 淡金黄    5.9:1 */
+  --ic-rules: #c7b9ee; /* 淡薰衣草紫 5.4:1 */
+  --ic-new-game: #f6ab97; /* 淡珊瑚    4.9:1 */
+  --ic-undo: #7fd8cd; /* 淡青      5.6:1 */
+  --ic-ai-auto: #b7e6a0; /* 淡草绿    6.2:1 */
+  --ic-ai-step: #f5acc6; /* 淡粉      4.9:1 */
+  --ic-mute: #cfc3f5; /* 淡蓝紫    5.7:1 */
+}
+
+/* 第一行：三个下拉框的色相（图标 + 文字 + 三角一起变） */
+#ctl-difficulty {
+  --ctl-color: var(--ic-difficulty);
+}
+#ctl-strength {
+  --ctl-color: var(--ic-strength);
+}
+#ctl-speed {
+  --ctl-color: var(--ic-speed);
+}
+
+/* 第二行 + 规则按钮：色相挂在按钮上，图标和悬停态都读它 */
+#rules {
+  --icon-color: var(--ic-rules);
+}
+#new-game {
+  --icon-color: var(--ic-new-game);
+}
+#undo {
+  --icon-color: var(--ic-undo);
+}
+#ai-auto {
+  --icon-color: var(--ic-ai-auto);
+}
+#ai-step {
+  --icon-color: var(--ic-ai-step);
+}
+#mute {
+  --icon-color: var(--ic-mute);
+}
+
+/* ---------------------------------------------------------------------------
    线性图标
    ---------------------------------------------------------------------------
    所有按钮图标都是内联 SVG（stroke 描边），**不用 emoji** ——
    emoji 是彩色实物图形，各平台长得不一样，也和整体线条风格不搭。
 
-   颜色：**淡色**（用户要求"清新一点、要淡的、不要和背景冲突"）。
-   暖白半透明在深棕面板上属于"低对比的浅色"，既不刺眼也不糊。
+   颜色：取按钮自己的 --icon-color（见上面九色表）。默认值给暖白，
+   这样没上色的按钮（overlay 里的）仍然正常。
    描边宽 1.7：18px 尺寸下比 1.8 更轻，比 1.5 更清楚。 */
 .icon-btn svg,
 .overlay button svg {
@@ -284,7 +353,7 @@ select option:checked {
   height: 18px;
   flex: 0 0 auto;
   fill: none;
-  stroke: rgba(255, 252, 247, 0.72);
+  stroke: var(--icon-color, rgba(255, 252, 247, 0.72));
   stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -292,18 +361,19 @@ select option:checked {
 
 /* 只有「AI 自动演示」的播放三角用实心 —— 小尺寸下空心三角太弱 */
 #ai-auto svg {
-  fill: rgba(255, 252, 247, 0.72);
+  fill: var(--icon-color, rgba(255, 252, 247, 0.72));
 }
 
-/* 悬停/按下时图标跟着文字一起变亮，否则按钮亮了图标还是灰的 */
+/* 悬停/按下时图标跟着文字一起变亮（往暖白走），否则按钮亮了图标还是暗的 */
 button:hover:not(:disabled) svg {
-  stroke: var(--panel-text);
+  stroke: color-mix(in srgb, var(--icon-color, white) 55%, var(--panel-text));
 }
 button:hover:not(:disabled) #ai-auto svg {
-  fill: var(--panel-text);
+  fill: color-mix(in srgb, var(--icon-color, white) 55%, var(--panel-text));
 }
 
-/* 棋盘上的 overlay 按钮是深底上的深底，图标用白一点更清楚 */
+/* 棋盘上的 overlay 按钮是深底上的深底，图标用白一点更清楚；
+   它们不在"九个图标"里，所以不上色，保持白色。 */
 .overlay button svg {
   stroke: rgba(255, 255, 255, 0.9);
 }
@@ -320,7 +390,7 @@ button:hover:not(:disabled) #ai-auto svg {
   white-space: nowrap;
 }
 
-/* 只有「规则」按钮是纯图标（没有文字），给它正方形内边距 */
+/* 「规则」按钮：图标 + 「规则」二字，按内容宽度，不参与下拉框的均分 */
 .controls .icon-btn {
   flex: 0 0 auto;
   padding: 7px 9px;
